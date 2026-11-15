@@ -45,9 +45,18 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        if ("com.thermalhunter".equals(lpparam.packageName)) {
+        install(lpparam.packageName, lpparam.classLoader);
+    }
+
+    /**
+     * 安装入口（legacy 入口与新 libxposed 入口 ThermalHunterModule 共用）。
+     * 新入口的存在只为消除 LSPosed 2.x 对 legacy 声明方式的「已弃用」警告；
+     * hook 实现继续走久经实战验证的 XposedBridge/XposedHelpers（LSPosed 2.x 运行时仍完整支持）。
+     */
+    static void install(String packageName, ClassLoader cl) {
+        if ("com.thermalhunter".equals(packageName)) {
             try {
-                XposedHelpers.findAndHookMethod("com.thermalhunter.core.ModuleStatus", lpparam.classLoader,
+                XposedHelpers.findAndHookMethod("com.thermalhunter.core.ModuleStatus", cl,
                         "isActive", XC_MethodReplacement.returnConstant(true));
             } catch (Throwable t) {
                 XposedBridge.log(TAG + "self hook failed: " + t);
@@ -55,11 +64,12 @@ public class HookEntry implements IXposedHookLoadPackage {
             return;
         }
         // LSPosed 只会在 system_server 中以 "android" 回调
-        if ("android".equals(lpparam.packageName)) {
+        if ("android".equals(packageName)) {
             Stats.start();
-            hookWakeLocks(lpparam.classLoader);
-            hookAlarms(lpparam.classLoader);
-            hookConnectivityHide(lpparam.classLoader);
+            hookWakeLocks(cl);
+            hookAlarms(cl);
+            hookConnectivityHide(cl);
+            hookScreenshotUnlock(cl);
             return;
         }
         // 其余包（含 system_server 托管的 providers.settings / telecom 等）一律不装 hook：
@@ -351,6 +361,112 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable ignored) {
         }
         sVpnHideAppIds = ids;
+        return ids;
+    }
+
+    // ---------------------------------------------------------------- 截图限制解除
+
+    /** 截图解锁名单的 appId 集合（/data/system/thermalhunter/screenshot.json），30 秒缓存。 */
+    private static volatile java.util.Set<Integer> sShotAppIds = java.util.Collections.emptySet();
+    private static volatile long sShotAt = -30_000L;
+
+    /**
+     * system_server 层解除 FLAG_SECURE：WindowState.isSecureLocked() 是 surface 创建时
+     * 打 SECURE 层标志与截屏/录屏安全校验的共同入口。对名单内应用的窗口，把「安全」
+     * 判定改为 false（其余应用不受任何影响）。任何异常都吞掉。
+     */
+    private static void hookScreenshotUnlock(ClassLoader cl) {
+        Class<?> ws = XposedHelpers.findClassIfExists("com.android.server.wm.WindowState", cl);
+        if (ws == null) {
+            XposedBridge.log(TAG + "screenshot-unlock: WindowState not found");
+            return;
+        }
+        XC_MethodHook unlock = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                try {
+                    if (!Boolean.TRUE.equals(param.getResult())) return;
+                    Object win = param.thisObject;
+                    Integer uid = null;
+                    try {
+                        uid = XposedHelpers.getIntField(win, "mUid");
+                    } catch (Throwable ignored) {
+                    }
+                    if (uid == null) {
+                        try {
+                            uid = (Integer) XposedHelpers.callMethod(win, "getUid");
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    if (uid == null) return;
+                    if (shotAppIds().contains(uid % 100000)) param.setResult(false);
+                } catch (Throwable ignored) {
+                }
+            }
+        };
+        try {
+            java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(ws, "isSecureLocked", unlock);
+            XposedBridge.log(TAG + "screenshot-unlock isSecureLocked hooks=" + uh.size());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "screenshot-unlock isSecureLocked failed: " + t);
+        }
+        try {
+            java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(ws, "isSecure", unlock);
+            XposedBridge.log(TAG + "screenshot-unlock isSecure hooks=" + uh.size());
+        } catch (Throwable t) {
+            // 个别版本没有 isSecure，忽略
+        }
+    }
+
+    /** 截图解锁名单：读 root 端写入的 /data/system/thermalhunter/screenshot.json（字符串 JSON 数组）。 */
+    private static java.util.Set<String> shotPkgs() {
+        java.util.Set<String> pkgs = new java.util.HashSet<>();
+        try {
+            File f = new File(STATS_DIR, "screenshot.json");
+            if (!f.exists()) return pkgs;
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+            }
+            JSONArray arr = new JSONArray(sb.toString());
+            for (int i = 0; i < arr.length(); i++) {
+                String p = arr.optString(i, "");
+                if (!p.isEmpty()) pkgs.add(p);
+            }
+        } catch (Throwable ignored) {
+        }
+        return pkgs;
+    }
+
+    /** 名单包名 → appId 集合；每 30 秒刷新一次（与 vpnHideAppIds 相同机制）。 */
+    private static java.util.Set<Integer> shotAppIds() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - sShotAt < 30_000) return sShotAppIds;
+        sShotAt = now;
+        java.util.Set<Integer> ids = new java.util.HashSet<>();
+        try {
+            java.util.Set<String> pkgs = shotPkgs();
+            if (!pkgs.isEmpty()) {
+                try (BufferedReader br = new BufferedReader(new FileReader("/data/system/packages.list"))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        int sp = line.indexOf(' ');
+                        if (sp <= 0) continue;
+                        String pkg = line.substring(0, sp);
+                        if (!pkgs.contains(pkg)) continue;
+                        int sp2 = line.indexOf(' ', sp + 1);
+                        if (sp2 <= sp) continue;
+                        try {
+                            ids.add(Integer.parseInt(line.substring(sp + 1, sp2)) % 100000);
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        sShotAppIds = ids;
         return ids;
     }
 

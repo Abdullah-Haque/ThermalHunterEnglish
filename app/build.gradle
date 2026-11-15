@@ -8,8 +8,8 @@ android {
         applicationId 'com.thermalhunter'
         minSdk 29
         targetSdk 35
-        versionCode 15
-        versionName '1.2.11'
+        versionCode 17
+        versionName '1.2.13'
     }
 
     // 固定签名：从环境变量或 keystore.properties 读取；都没有时回退到 debug 签名
@@ -41,12 +41,23 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    packagingOptions { resources.excludes += ['META-INF/**'] }
+    // 排除依赖携带的杂项 META-INF，但保留我们自己的 META-INF/xposed（libxposed 新式模块声明）
+    packagingOptions {
+        resources.excludes += [
+                'META-INF/AL2.0', 'META-INF/LGPL2.1',
+                'META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/DEPENDENCIES*',
+                'META-INF/versions/**', 'META-INF/proguard/**',
+                'META-INF/com/android/**', 'META-INF/services/**',
+                'META-INF/*.kotlin_module', 'META-INF/*.version',
+        ]
+    }
     lint { checkReleaseBuilds false; abortOnError false }
 }
 
 dependencies {
     compileOnly project(':xposed-stub')
+    // 新 libxposed API：LSPosed 2.x 识别新式模块（META-INF/xposed/），消除 legacy「已弃用」警告
+    compileOnly 'io.github.libxposed:api:101.0.1'
     // Shizuku：无 root 时通过无线调试（ADB）以 shell 身份运行采集进程
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'

@@ -77,7 +77,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private Button cleanBtn;
     // 工具箱菜单首页：menuScreen 为默认首页，monitorScreen 为监控仪表盘子页
     private View menuScreen, monitorScreen;
-    private TextView menuDevice, menuChip, menuMonitorDesc, menuVpnDesc, menuCompatDesc, menuCleanDesc, menuFloatDesc;
+    private TextView menuDevice, menuChip, menuMonitorDesc, menuVpnDesc, menuCompatDesc, menuShotDesc, menuCleanDesc, menuFloatDesc;
     private final EntityAdapter adapter = new EntityAdapter();
     private final Runnable hideSnack = () -> snack.animate().alpha(0f).translationY(20f).setDuration(200)
             .withEndAction(() -> snack.setVisibility(View.GONE)).start();
@@ -94,6 +94,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         setContentView(buildLayout());
         mon = Monitor.get(this);
         syncVpnHideConfig(); // 把名单写到 system 可读的配置，VPN 隐身统一由 system_server 层按名单完成
+        syncScreenshotConfig(); // 截图限制解除名单同理
     }
 
     /** 只在界面可见时订阅采样；悬浮窗开启时由悬浮窗单独订阅。 */
@@ -328,6 +329,10 @@ public class MainActivity extends Activity implements Monitor.Listener {
         CompatFix.query((ok, msg, st) -> {
             if (menuCompatDesc != null) menuCompatDesc.setText(ok ? CompatFix.desc(st) : "需要 root · 点击查看");
         });
+
+        menuShotDesc = u.text(shotSummary(), 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_shot, 0xFF10B981, "截图限制解除", menuShotDesc, this::openShotPicker),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
 
         menuCleanDesc = u.text("检测发热 / 耗电异常并处理", 12, u.dim, false);
         col.addView(menuCard(R.drawable.ic_clean, u.bad, "一键清理异常", menuCleanDesc, this::confirmClean),
@@ -1385,6 +1390,153 @@ public class MainActivity extends Activity implements Monitor.Listener {
             if (menuVpnDesc != null) menuVpnDesc.setText(vpnHideSummary());
             snack(working.isEmpty() ? "已清空 VPN 隐身列表"
                     : "已对 " + working.size() + " 个应用启用，重启该应用后生效", true);
+        });
+        s.action("取消", Sheet.NORMAL, null);
+        s.show();
+    }
+
+    // ------------------------------------------------------------------ 截图限制解除
+
+    /** 截图解锁名单的本地存储（UI 事实来源）。 */
+    private SharedPreferences shotPrefs() {
+        return getSharedPreferences("screenshot", MODE_PRIVATE);
+    }
+
+    /** 把名单写到 /data/system/thermalhunter/screenshot.json，system_server 层按名单解除 FLAG_SECURE。 */
+    private void syncScreenshotConfig() {
+        final java.util.Set<String> pkgs = shotPkgs();
+        new Thread(() -> {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray();
+                for (String p : pkgs) arr.put(p);
+                String b64 = android.util.Base64.encodeToString(
+                        arr.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        android.util.Base64.NO_WRAP);
+                String cmd = "mkdir -p /data/system/thermalhunter; "
+                        + "chown system:system /data/system/thermalhunter; "
+                        + "chmod 700 /data/system/thermalhunter; echo '" + b64
+                        + "' | base64 -d > /data/system/thermalhunter/screenshot.json; "
+                        + "chmod 644 /data/system/thermalhunter/screenshot.json";
+                Process pr = new ProcessBuilder("su", "-c", cmd).start();
+                if (!pr.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) pr.destroyForcibly();
+            } catch (Throwable ignored) {
+            }
+        }, "shot-sync").start();
+    }
+
+    private java.util.Set<String> shotPkgs() {
+        return new java.util.HashSet<>(shotPrefs().getStringSet("pkgs", java.util.Collections.emptySet()));
+    }
+
+    private String shotSummary() {
+        int n = shotPkgs().size();
+        return n == 0 ? "尚未选择任何应用" : "已对 " + n + " 个应用解除";
+    }
+
+    private void openShotPicker() {
+        snack("正在读取应用列表…", true);
+        new Thread(() -> {
+            PackageManager pm = getPackageManager();
+            List<ApplicationInfo> apps = new ArrayList<>();
+            for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+                boolean system = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
+                if ("com.thermalhunter".equals(ai.packageName)) continue;
+                if (system && (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) continue;
+                apps.add(ai);
+            }
+            apps.sort((a, b) -> pm.getApplicationLabel(a).toString()
+                    .compareToIgnoreCase(pm.getApplicationLabel(b).toString()));
+            java.util.Set<String> selected = shotPkgs();
+            ui.post(() -> showShotPicker(apps, selected));
+        }, "app-list-shot").start();
+    }
+
+    private void showShotPicker(List<ApplicationInfo> apps, java.util.Set<String> selected) {
+        ui.removeCallbacks(hideSnack);
+        snack.setVisibility(View.GONE);
+        PackageManager pm = getPackageManager();
+        java.util.Set<String> working = new java.util.HashSet<>(selected);
+        Sheet s = new Sheet(this, u).title("截图限制解除",
+                "勾选需要允许截屏 / 录屏的应用（多为银行、支付类应用设置的 FLAG_SECURE）");
+
+        EditText search = new EditText(this);
+        search.setHint("搜索应用名或包名");
+        search.setSingleLine(true);
+        search.setTextSize(14);
+        search.setTextColor(u.fg);
+        search.setHintTextColor(u.dim);
+        search.setBackground(Ui.round(u.sunken, u.dp(12)));
+        search.setPadding(u.dp(14), u.dp(11), u.dp(14), u.dp(11));
+
+        LinearLayout list = u.col();
+        final List<View> rows = new ArrayList<>();
+        final List<String> keys = new ArrayList<>();
+        for (ApplicationInfo ai : apps) {
+            String pkg = ai.packageName;
+            String label = pm.getApplicationLabel(ai).toString();
+            LinearLayout r = u.row();
+            r.setPadding(u.dp(12), u.dp(10), u.dp(12), u.dp(10));
+            r.setBackground(Ui.round(u.sunken, u.dp(14)));
+            ImageView icon = new ImageView(this);
+            try {
+                icon.setImageDrawable(pm.getApplicationIcon(ai));
+            } catch (Throwable ignored) {
+            }
+            r.addView(icon, Ui.lp(u.dp(34), u.dp(34), 0, 0, u.dp(10), 0));
+            LinearLayout c = u.col();
+            TextView t = u.text(label, 14, u.fg, true);
+            t.setSingleLine(true);
+            t.setEllipsize(TextUtils.TruncateAt.END);
+            c.addView(t);
+            TextView pt = u.text(pkg, 11, u.dim, false);
+            pt.setSingleLine(true);
+            pt.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            c.addView(pt);
+            r.addView(c, Ui.weight(1));
+            Switch sw = new Switch(this);
+            sw.setChecked(working.contains(pkg));
+            sw.setOnCheckedChangeListener((b, on) -> {
+                if (on) working.add(pkg);
+                else working.remove(pkg);
+            });
+            r.addView(sw, Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
+            r.setOnClickListener(v -> sw.toggle());
+            list.addView(r, Ui.lp(-1, -2, 0, rows.isEmpty() ? 0 : u.dp(8), 0, 0));
+            rows.add(r);
+            keys.add((label + " " + pkg).toLowerCase(Locale.ROOT));
+        }
+        TextView empty = u.text("没有匹配的应用", 13, u.dim, false);
+        empty.setPadding(0, u.dp(16), 0, 0);
+        empty.setVisibility(View.GONE);
+        list.addView(empty);
+
+        search.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence x, int a, int b, int c) {}
+            public void onTextChanged(CharSequence x, int a, int b, int c) {}
+            public void afterTextChanged(Editable e) {
+                String q = e.toString().trim().toLowerCase(Locale.ROOT);
+                int shown = 0;
+                for (int i = 0; i < rows.size(); i++) {
+                    boolean match = q.isEmpty() || keys.get(i).contains(q);
+                    rows.get(i).setVisibility(match ? View.VISIBLE : View.GONE);
+                    if (match) shown++;
+                }
+                empty.setVisibility(shown == 0 ? View.VISIBLE : View.GONE);
+            }
+        });
+
+        s.pin(search);
+        s.add(list);
+        s.add(u.note("解除在系统框架层统一完成：勾选后重启该应用即可正常截屏 / 录屏。"
+                + "一次性前提：LSPosed 里已启用本模块、作用域包含「系统框架」。"
+                + "注意：解除仅作用于勾选的应用，其他应用的安全标志不受影响。", u.dim),
+                Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
+        s.action("保存", Sheet.PRIMARY, () -> {
+            shotPrefs().edit().putStringSet("pkgs", working).commit();
+            syncScreenshotConfig();
+            if (menuShotDesc != null) menuShotDesc.setText(shotSummary());
+            snack(working.isEmpty() ? "已清空截图解除列表"
+                    : "已对 " + working.size() + " 个应用解除，重启该应用后生效", true);
         });
         s.action("取消", Sheet.NORMAL, null);
         s.show();
