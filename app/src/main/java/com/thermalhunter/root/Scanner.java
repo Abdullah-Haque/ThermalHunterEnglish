@@ -593,14 +593,27 @@ final class Scanner {
         long cur = Sys.readLong(d + "/current_now", 0);
         long volt = Sys.readLong(d + "/voltage_now", 0);
         // 单位自适应：µA/mA、µV/mV
-        double ma = Math.abs(cur) > 20000 ? cur / 1000.0 : cur;
         double mv = volt > 100000 ? volt / 1000.0 : volt;
+        boolean discharging = "Discharging".equalsIgnoreCase(st) || "Not charging".equalsIgnoreCase(st);
+        double ma = currentMa(cur, mv, discharging);
         o.put("currentMa", Math.round(ma));
         o.put("voltageMv", Math.round(mv));
         o.put("powerMw", Math.round(Math.abs(ma) * mv / 1000.0));
         long temp = Sys.readLong(d + "/temp", Long.MIN_VALUE);
         if (temp != Long.MIN_VALUE) o.put("tempC", temp / 10.0);
         return o;
+    }
+
+    /**
+     * 把 current_now 原始读数解释为 mA。标准单位是 µA，少数驱动报 mA。
+     * 放电时整机功耗不可能达到几十瓦：按 mA 解释超过 30W 必为 µA
+     * （修复 1~20mA 的低 µA 电流被旧阈值 20000 误读成 mA）；
+     * 充电时可能出现大电流，保留保守的幅度阈值。
+     */
+    private static double currentMa(long cur, double mv, boolean discharging) {
+        if (Math.abs(cur) > 20000) return cur / 1000.0;
+        if (discharging && Math.abs(cur) * mv / 1000.0 > 30000) return cur / 1000.0;
+        return cur;
     }
 
     private JSONArray thermal() throws Exception {

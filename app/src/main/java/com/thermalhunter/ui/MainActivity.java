@@ -75,6 +75,9 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private final TextView[] tabViews = new TextView[TABS.length];
     private ListView list;
     private Button cleanBtn;
+    // 工具箱菜单首页：menuScreen 为默认首页，monitorScreen 为监控仪表盘子页
+    private View menuScreen, monitorScreen;
+    private TextView menuDevice, menuChip, menuMonitorDesc, menuVpnDesc, menuCompatDesc, menuCleanDesc, menuFloatDesc;
     private final EntityAdapter adapter = new EntityAdapter();
     private final Runnable hideSnack = () -> snack.animate().alpha(0f).translationY(20f).setDuration(200)
             .withEndAction(() -> snack.setVisibility(View.GONE)).start();
@@ -90,6 +93,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         getWindow().setNavigationBarColor(u.bg);
         setContentView(buildLayout());
         mon = Monitor.get(this);
+        syncVpnHideConfig(); // 把名单写到 system 可读的配置，VPN 隐身统一由 system_server 层按名单完成
     }
 
     /** 只在界面可见时订阅采样；悬浮窗开启时由悬浮窗单独订阅。 */
@@ -131,14 +135,17 @@ public class MainActivity extends Activity implements Monitor.Listener {
         frame.setBackgroundColor(u.bg);
         frame.setFitsSystemWindows(true);
         LinearLayout rootView = u.col();
+        monitorScreen = rootView;
         frame.addView(rootView, new FrameLayout.LayoutParams(-1, -1));
 
         // 头部（随列表一起滚动）
         LinearLayout header = u.col();
         header.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(6));
 
-        // 顶栏：标题 / 设备 / 模式标签 / 悬浮窗 / 设置
+        // 顶栏：返回 / 标题 / 设备 / 模式标签 / 悬浮窗 / 设置
         LinearLayout top = u.row();
+        top.addView(iconButton(R.drawable.ic_back, "返回菜单", v -> showMenu()),
+                Ui.lp(u.dp(42), u.dp(42), 0, 0, u.dp(8), 0));
         LinearLayout titleCol = u.col();
         titleCol.addView(u.text("热源猎手", 24, u.fg, true));
         headDevice = u.text("正在连接…", 12, u.dim, false);
@@ -267,6 +274,11 @@ public class MainActivity extends Activity implements Monitor.Listener {
         bottom.addView(cleanBtn, new LinearLayout.LayoutParams(-1, u.dp(52)));
         rootView.addView(bottom);
 
+        // 工具箱菜单首页（默认显示）；监控仪表盘作为子页，点菜单进入、返回键回到菜单
+        menuScreen = buildMenu();
+        frame.addView(menuScreen, new FrameLayout.LayoutParams(-1, -1));
+        monitorScreen.setVisibility(View.GONE);
+
         // 轻提示（替代系统 Toast）
         snack = u.text("", 13, Color.WHITE, false);
         snack.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(12));
@@ -277,6 +289,102 @@ public class MainActivity extends Activity implements Monitor.Listener {
         sp.setMargins(u.dp(16), 0, u.dp(16), u.dp(80));
         frame.addView(snack, sp);
         return frame;
+    }
+
+    // ------------------------------------------------------------------ 工具箱菜单首页
+
+    private View buildMenu() {
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.setFillViewport(true);
+        sv.setVerticalScrollBarEnabled(false);
+        LinearLayout col = u.col();
+        col.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(28));
+
+        LinearLayout top = u.row();
+        LinearLayout titleCol = u.col();
+        titleCol.addView(u.text("热源猎手", 24, u.fg, true));
+        menuDevice = u.text("正在连接…", 12, u.dim, false);
+        menuDevice.setSingleLine(true);
+        menuDevice.setEllipsize(TextUtils.TruncateAt.END);
+        titleCol.addView(menuDevice);
+        top.addView(titleCol, Ui.weight(1));
+        menuChip = u.chip("", u.dim);
+        top.addView(menuChip, Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
+        col.addView(top);
+
+        col.addView(u.text("工具", 13, u.dim, true), Ui.lp(-1, -2, u.dp(2), u.dp(20), 0, u.dp(10)));
+
+        menuMonitorDesc = u.text("正在采集…", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_temp, u.accent, "温度 / 负载监控", menuMonitorDesc, this::showMonitor),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+
+        menuVpnDesc = u.text(vpnHideSummary(), 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_vpn, u.good, "VPN 隐身", menuVpnDesc, this::openVpnHidePicker),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+
+        menuCompatDesc = u.text("正在检测状态…", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_compat, 0xFFF59E0B, "加固应用兼容修复", menuCompatDesc, this::openCompatSheet),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+        CompatFix.query((ok, msg, st) -> {
+            if (menuCompatDesc != null) menuCompatDesc.setText(ok ? CompatFix.desc(st) : "需要 root · 点击查看");
+        });
+
+        menuCleanDesc = u.text("检测发热 / 耗电异常并处理", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_clean, u.bad, "一键清理异常", menuCleanDesc, this::confirmClean),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+
+        col.addView(menuCard(R.drawable.ic_refresh, 0xFF8B5CF6, "屏幕刷新率",
+                u.text("锁定高刷，忽略系统按应用限频", 12, u.dim, false), this::openRefreshSheet),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+
+        menuFloatDesc = u.text(FloatService.isRunning() ? "已开启" : "已关闭", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_float, 0xFF0EA5E9, "悬浮窗", menuFloatDesc, this::toggleFloat),
+                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+
+        col.addView(menuCard(R.drawable.ic_tune, u.dim, "设置",
+                u.text("工作模式、自动归因、清理选项、判定规则", 12, u.dim, false), this::showSettings),
+                Ui.lp(-1, -2, 0, 0, 0, 0));
+
+        sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
+        return sv;
+    }
+
+    /** 菜单卡片：左侧彩色图标 + 标题 + 描述 + 右箭头。desc 由调用方传入以便动态更新。 */
+    private View menuCard(int icon, int tint, String title, TextView desc, Runnable onClick) {
+        LinearLayout r = u.row();
+        r.setPadding(u.dp(16), u.dp(15), u.dp(16), u.dp(15));
+        r.setBackground(u.ripple(u.card(u.dp(18))));
+        FrameLayout ib = new FrameLayout(this);
+        ib.setBackground(Ui.round(Ui.tint(tint), u.dp(14)));
+        ImageView iv = new ImageView(this);
+        iv.setImageResource(icon);
+        iv.setColorFilter(tint);
+        ib.addView(iv, new FrameLayout.LayoutParams(u.dp(24), u.dp(24), Gravity.CENTER));
+        r.addView(ib, Ui.lp(u.dp(46), u.dp(46), 0, 0, u.dp(14), 0));
+        LinearLayout c = u.col();
+        c.addView(u.text(title, 16, u.fg, true));
+        desc.setLineSpacing(u.dp(1), 1f);
+        c.addView(desc, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
+        r.addView(c, Ui.weight(1));
+        r.addView(u.text("›", 22, u.dim, true), Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
+        r.setOnClickListener(v -> onClick.run());
+        return r;
+    }
+
+    private void showMonitor() {
+        menuScreen.setVisibility(View.GONE);
+        monitorScreen.setVisibility(View.VISIBLE);
+    }
+
+    private void showMenu() {
+        monitorScreen.setVisibility(View.GONE);
+        menuScreen.setVisibility(View.VISIBLE);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (monitorScreen != null && monitorScreen.getVisibility() == View.VISIBLE) showMenu();
+        else super.onBackPressed();
     }
 
     private ImageView iconButton(int icon, String desc, View.OnClickListener l) {
@@ -312,6 +420,11 @@ public class MainActivity extends Activity implements Monitor.Listener {
         modeChip.setText("root".equals(mode) ? "ROOT" : "shell".equals(mode) ? "SHIZUKU" : "未连接");
         modeChip.setTextColor(col);
         modeChip.setBackground(Ui.round(Ui.tint(col), u.dp(10)));
+        if (menuChip != null) {
+            menuChip.setText(modeChip.getText());
+            menuChip.setTextColor(col);
+            menuChip.setBackground(Ui.round(Ui.tint(col), u.dp(10)));
+        }
     }
 
     private void snack(String msg, boolean ok) {
@@ -437,6 +550,19 @@ public class MainActivity extends Activity implements Monitor.Listener {
         if (tab == 2 && !shell) profStatus.setText(profStatusText(r));
         emptyText.setText(emptyMessage(shell));
         emptyText.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
+
+        // 菜单首页的动态描述（即使菜单当前不可见也保持最新，切回即见）
+        if (menuMonitorDesc != null) {
+            String t = mainTemp > -999 ? Analyzer.fmt(mainTemp) + "°C" : "--";
+            menuMonitorDesc.setText("当前 " + t + (r.discharging ? " · 放电中" : "") + " · 点击查看排行");
+        }
+        if (menuCleanDesc != null) {
+            menuCleanDesc.setText(r.badCount > 0 ? r.badCount + " 个异常对象待处理" : "当前状态良好，无异常");
+        }
+        if (menuDevice != null && dev != null) {
+            menuDevice.setText(dev.optString("model") + " · " + dev.optString("soc")
+                    + " · Android " + dev.optString("android"));
+        }
     }
 
     private static int flagged(List<Entity> l) {
@@ -968,33 +1094,11 @@ public class MainActivity extends Activity implements Monitor.Listener {
         }
         paint.run();
 
-        s.section("悬浮窗");
-        s.add(switchRow("显示悬浮窗", "在其他应用上方实时显示温度、功耗和发热最高的进程；可拖动，轻点展开 / 收起",
-                FloatService.isRunning(), on -> {
-                    s.dismiss();
-                    if (on != FloatService.isRunning()) toggleFloat();
-                }));
-
         s.section("LSP 模块");
         s.add(switchRow("自动归因模块占用（root）",
                 "用系统自带的 simpleperf 每 30 秒低频采样一次注入模块的进程，按调用栈算出每个模块实际消耗的 CPU；"
                         + "会额外占用少量 CPU，只在界面或悬浮窗开启时运行",
                 mon.autoProfEnabled(), on -> mon.setAutoProf(on)));
-
-        s.section("屏幕刷新率");
-        s.add(navRow("调整全局刷新率", "锁定高刷后对所有应用统一生效，不再被系统按应用限频", () -> {
-            s.dismiss();
-            openRefreshSheet();
-        }));
-
-        s.section("VPN 隐身（对所选应用隐藏 VPN 状态）");
-        s.add(navRow("选择要隐身的应用…", vpnHideSummary(), () -> {
-            s.dismiss();
-            openVpnHidePicker();
-        }));
-        s.add(u.note("原理：在所选应用进程里让 VPN / 代理检测 API 报告「无 VPN」。"
-                + "需要在 LSPosed 管理器里把这些应用加入本模块的作用域，并勾选后重启该应用或手机。"
-                + "内核层的 vpnhide 模块只隐藏网络接口，挡不住框架 API 检测，本功能补这一层。", u.dim));
 
         s.section("一键清理");
         s.add(switchRow("同时处理前台应用", "默认只处理后台的异常应用",
@@ -1088,27 +1192,83 @@ public class MainActivity extends Activity implements Monitor.Listener {
                         r.optBoolean("ok")));
     }
 
+    // ------------------------------------------------------------------ 加固应用兼容修复
+
+    private void openCompatSheet() {
+        snack("正在检测修复状态…", true);
+        CompatFix.query((ok, msg, st) -> {
+            snack.setVisibility(View.GONE);
+            if (!ok || st == null) {
+                snack(msg, false);
+                if (menuCompatDesc != null) menuCompatDesc.setText("需要 root · 点击查看");
+                return;
+            }
+            Sheet s = new Sheet(this, u).title("加固应用兼容修复", st.active
+                    ? "当前：已启用（影子挂载生效，加固应用读到 enforce=0）"
+                    : "当前：未启用");
+            s.add(u.note(
+                    "部分加固应用（如数字人民币）在 root 设备上启动即闪退："
+                            + "加固自检读到 SELinux 为 Enforcing 且检出 root 时会故意崩溃。\n\n"
+                            + "本修复把 /sys/fs/selinux/enforce 用 bind-mount 遮盖为 0，"
+                            + "让加固当作非 Enforcing 环境放行。\n\n"
+                            + "· 真实 SELinux 状态与权限控制完全不变\n"
+                            + "· 即时生效，无需重启手机\n"
+                            + "· 重启 / 软重启后需重新启用\n"
+                            + "· 挂载期间 getenforce 等工具会误显示 Permissive（只读到了影子）\n"
+                            + "· 停用即 umount，一步完整还原", u.dim));
+            if (st.active) {
+                s.action("停用（还原真实状态）", Sheet.DANGER, () -> runCompat(false));
+                s.action("完成", Sheet.NORMAL, null);
+            } else {
+                s.action("启用修复", Sheet.PRIMARY, () -> runCompat(true));
+                s.action("取消", Sheet.NORMAL, null);
+            }
+            s.show();
+        });
+    }
+
+    private void runCompat(boolean enable) {
+        snack(enable ? "正在启用…" : "正在还原…", true);
+        CompatFix.set(enable, (ok, msg, st) -> {
+            snack(msg, ok);
+            if (menuCompatDesc != null && st != null) menuCompatDesc.setText(CompatFix.desc(st));
+            else if (menuCompatDesc != null) menuCompatDesc.setText(ok ? CompatFix.desc(null) : "需要 root · 点击查看");
+        });
+    }
+
     // ------------------------------------------------------------------ VPN 隐身
 
-    /**
-     * 模块激活时用 MODE_WORLD_READABLE：LSPosed（xposedsharedprefs）会把它重定向到 hook 进程可读的远程偏好，
-     * XSharedPreferences 才读得到。未激活时会抛 SecurityException，退回私有文件。
-     */
-    @SuppressWarnings("deprecation")
+    /** 本地名单（UI 的事实来源）。旧 MODE_WORLD_READABLE 重定向在 targetSdk 35 上不可靠，弃用。 */
     private SharedPreferences hidePrefs() {
-        SharedPreferences local = getSharedPreferences("hide", MODE_PRIVATE);
-        try {
-            SharedPreferences remote = getSharedPreferences("hide", MODE_WORLD_READABLE);
-            if (remote != local && !remote.contains("vpn_pkgs") && local.contains("vpn_pkgs")) {
-                // 迁移旧版本写在私有文件里的名单
-                remote.edit().putStringSet("vpn_pkgs",
-                        new java.util.HashSet<>(local.getStringSet("vpn_pkgs", java.util.Collections.emptySet())))
-                        .apply();
+        return getSharedPreferences("hide", MODE_PRIVATE);
+    }
+
+    /**
+     * 把名单写到 /data/system/thermalhunter/vpnhide.json（system 所有、system_server 可读），
+     * VPN 隐身的唯一依据：system_server 层按名单对目标应用抹掉 VPN 标志，无需逐个配置 LSPosed 作用域。
+     * 旧「私有 prefs 改世界可读」在本机行不通（0660 + SELinux 跨应用隔离），故改走 root 写系统目录。
+     */
+    private void syncVpnHideConfig() {
+        final java.util.Set<String> pkgs = vpnHidePkgs();
+        new Thread(() -> {
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray();
+                for (String p : pkgs) arr.put(p);
+                String b64 = android.util.Base64.encodeToString(
+                        arr.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        android.util.Base64.NO_WRAP);
+                // 目录必须归 system 所有：Stats.flush 以 uid 1000 写 stats.json，
+                // 若 fresh install 时本进程(root)先建目录而不 chown，system 写不进 → 归因统计静默失效。
+                String cmd = "mkdir -p /data/system/thermalhunter; "
+                        + "chown system:system /data/system/thermalhunter; "
+                        + "chmod 700 /data/system/thermalhunter; echo '" + b64
+                        + "' | base64 -d > /data/system/thermalhunter/vpnhide.json; "
+                        + "chmod 644 /data/system/thermalhunter/vpnhide.json";
+                Process pr = new ProcessBuilder("su", "-c", cmd).start();
+                if (!pr.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) pr.destroyForcibly();
+            } catch (Throwable ignored) {
             }
-            return remote;
-        } catch (SecurityException e) {
-            return local;
-        }
+        }, "vpnhide-sync").start();
     }
 
     private java.util.Set<String> vpnHidePkgs() {
@@ -1118,22 +1278,6 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private String vpnHideSummary() {
         int n = vpnHidePkgs().size();
         return n == 0 ? "尚未选择任何应用" : "已对 " + n + " 个应用启用";
-    }
-
-    /** 可点击的导航行（右侧箭头），用于打开二级面板。 */
-    private View navRow(String title, String desc, Runnable onClick) {
-        LinearLayout r = u.row();
-        r.setPadding(u.dp(14), u.dp(12), u.dp(14), u.dp(12));
-        r.setBackground(u.ripple(Ui.round(u.sunken, u.dp(14))));
-        LinearLayout c = u.col();
-        c.addView(u.text(title, 15, u.fg, true));
-        TextView d = u.text(desc, 12, u.dim, false);
-        d.setLineSpacing(u.dp(1), 1f);
-        c.addView(d, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
-        r.addView(c, Ui.weight(1));
-        r.addView(u.text("›", 20, u.dim, true), Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
-        r.setOnClickListener(v -> onClick.run());
-        return r;
     }
 
     private void openVpnHidePicker() {
@@ -1160,7 +1304,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         snack.setVisibility(View.GONE);
         PackageManager pm = getPackageManager();
         java.util.Set<String> working = new java.util.HashSet<>(selected);
-        Sheet s = new Sheet(this, u).title("VPN 隐身", "勾选的应用在运行时将检测不到 VPN（仍需在 LSPosed 作用域里包含它们）");
+        Sheet s = new Sheet(this, u).title("VPN 隐身", "在这里勾选一次即可，无需再到 LSPosed 里添加作用域");
 
         // 固定在顶部的搜索框
         EditText search = new EditText(this);
@@ -1231,10 +1375,16 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
         s.pin(search);
         s.add(list);
+        s.add(u.note("隐身在系统框架层统一完成：勾选后重启该应用即生效。"
+                + "一次性前提：LSPosed 里已启用本模块、作用域包含「系统框架」。"
+                + "局限：不覆盖应用直接读取 tun0 网卡或 native 层的检测。", u.dim),
+                Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
         s.action("保存", Sheet.PRIMARY, () -> {
-            hidePrefs().edit().putStringSet("vpn_pkgs", working).apply();
+            hidePrefs().edit().putStringSet("vpn_pkgs", working).commit();
+            syncVpnHideConfig();
+            if (menuVpnDesc != null) menuVpnDesc.setText(vpnHideSummary());
             snack(working.isEmpty() ? "已清空 VPN 隐身列表"
-                    : "已对 " + working.size() + " 个应用启用，请在 LSPosed 作用域里包含它们并重启该应用", true);
+                    : "已对 " + working.size() + " 个应用启用，重启该应用后生效", true);
         });
         s.action("取消", Sheet.NORMAL, null);
         s.show();
@@ -1274,6 +1424,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         boolean on = FloatService.isRunning();
         floatBtn.setColorFilter(on ? Color.WHITE : u.fg);
         floatBtn.setBackground(u.ripple(on ? Ui.round(u.accent, u.dp(21)) : u.card(u.dp(21))));
+        if (menuFloatDesc != null) menuFloatDesc.setText(on ? "已开启 · 点击关闭" : "已关闭 · 点击开启");
     }
 
     // ------------------------------------------------------------------ 列表

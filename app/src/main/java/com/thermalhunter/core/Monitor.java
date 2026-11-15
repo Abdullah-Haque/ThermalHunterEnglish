@@ -268,8 +268,10 @@ public final class Monitor {
                     : st == BatteryManager.BATTERY_STATUS_NOT_CHARGING ? "Not charging"
                     : st == BatteryManager.BATTERY_STATUS_FULL ? "Full" : "");
             int cur = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW); // 一般为 µA
-            double ma = cur == Integer.MIN_VALUE ? 0 : Math.abs(cur) > 20000 ? cur / 1000.0 : cur;
             int mv = i == null ? 0 : i.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0);
+            boolean discharging = st == BatteryManager.BATTERY_STATUS_DISCHARGING
+                    || st == BatteryManager.BATTERY_STATUS_NOT_CHARGING;
+            double ma = cur == Integer.MIN_VALUE ? 0 : currentMa(cur, mv, discharging);
             o.put("currentMa", Math.round(ma));
             o.put("voltageMv", mv);
             o.put("powerMw", Math.round(Math.abs(ma) * mv / 1000.0));
@@ -278,5 +280,15 @@ public final class Monitor {
             snap.put("battery", o);
         } catch (Throwable ignored) {
         }
+    }
+
+    /**
+     * 把电流原始读数解释为 mA（与 root 端 Scanner.currentMa 同一套规则）。
+     * 放电时按 mA 解释功率超过 30W 必为 µA；充电时保留保守的幅度阈值。
+     */
+    private static double currentMa(long cur, double mv, boolean discharging) {
+        if (Math.abs(cur) > 20000) return cur / 1000.0;
+        if (discharging && Math.abs(cur) * mv / 1000.0 > 30000) return cur / 1000.0;
+        return cur;
     }
 }

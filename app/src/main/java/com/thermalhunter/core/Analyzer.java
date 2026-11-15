@@ -225,7 +225,14 @@ public final class Analyzer {
             for (Iterator<String> it = hookPkgs.keys(); it.hasNext(); ) {
                 String pkg = it.next();
                 JSONObject o = hookPkgs.optJSONObject(pkg);
-                Entity e = heat.get("app:" + pkg + ":0");
+                // hook 统计按包名聚合、不区分用户：优先主用户实体，否则取任一在跑的用户实体，
+                // 否则分身 / 工作资料（user>0）的应用会关联不上唤醒数据
+                Entity e = null;
+                List<Entity> users = byPkg.get(pkg);
+                if (users != null) {
+                    for (Entity u : users) if (u.user == 0) { e = u; break; }
+                    if (e == null) e = users.get(0);
+                }
                 double[] rate = wakeRates.get(pkg);
                 boolean significant = rate != null && (rate[0] >= 0.2 || rate[1] >= 2);
                 if (e == null && significant) {

@@ -19,6 +19,9 @@ import java.nio.charset.StandardCharsets;
  * 所有调用都必须在后台线程。
  */
 public final class RootSession {
+    /** 单次请求（含启动握手）的最长等待；超时后中止会话并强杀后台进程，避免 monitor 线程永久阻塞。 */
+    private static final long CALL_TIMEOUT_MS = 30_000;
+
     private Process process;
     private BufferedWriter writer;
     private BufferedReader reader;
@@ -76,8 +79,9 @@ public final class RootSession {
             writer.write("exec /system/bin/app_process /system/bin --nice-name=thermalhunter_root "
                     + "com.thermalhunter.root.RootMain\n");
             writer.flush();
+            long deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS;
             String line;
-            while ((line = reader.readLine()) != null) {
+            while ((line = readLineTimeout(deadline)) != null) {
                 if (line.equals("@@READY")) return true;
             }
             if (lastError.isEmpty()) lastError = shizuku ? "后台进程没有启动"
@@ -96,8 +100,9 @@ public final class RootSession {
         writer.write(cmd);
         writer.write('\n');
         writer.flush();
+        long deadline = System.currentTimeMillis() + CALL_TIMEOUT_MS;
         String line;
-        while ((line = reader.readLine()) != null) {
+        while ((line = readLineTimeout(deadline)) != null) {
             if (line.startsWith("@@")) {
                 try {
                     return new JSONObject(line.substring(2));
@@ -108,6 +113,43 @@ public final class RootSession {
         }
         close();
         throw new IOException("root 进程已退出 " + lastError);
+    }
+
+    /**
+     * 带超时地读一行。用轮询而非阻塞 read：后台进程卡死后强杀父进程也不一定能拿到 EOF
+     * （子进程可能仍持有 stdout 管道），必须让调用线程自己能退出。
+     * 超时则中止会话并返回 null；正常 EOF 也返回 null，由 lastError 区分。
+     */
+    private String readLineTimeout(long deadline) throws IOException {
+        while (true) {
+            if (reader.ready()) return reader.readLine();
+            // ready() 在 EOF 上恒为 false（EOF 不算"就绪"）。进程已退出时直接 readLine
+            // 立即取 EOF/残余数据，保留真实错误原因（如 su 拒绝），避免空转到超时。
+            if (!isAlive()) return reader.readLine();
+            if (System.currentTimeMillis() > deadline) {
+                abortTimeout();
+                return null;
+            }
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("读取被中断", e);
+            }
+        }
+    }
+
+    /** 超时中止：close 关闭 stdin 后孤儿 app_process 会自行退出，再强杀确保清理。 */
+    private void abortTimeout() {
+        lastError = "后台进程超过 " + CALL_TIMEOUT_MS / 1000 + " 秒没有响应，已强制结束";
+        Process p = process;
+        close();
+        if (p != null) {
+            try {
+                p.destroyForcibly();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     /** 调用并把异常转成 {ok:false} */

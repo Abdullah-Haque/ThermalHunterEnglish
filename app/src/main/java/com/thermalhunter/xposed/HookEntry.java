@@ -3,6 +3,7 @@ package com.thermalhunter.xposed;
 import android.os.IBinder;
 import android.os.SystemClock;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -10,20 +11,15 @@ import java.io.BufferedReader;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
@@ -32,7 +28,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  *   - android (system_server)：统计每个应用的 PARTIAL 唤醒锁持有时长与唤醒型闹钟次数，
  *     周期性写入 /data/system/thermalhunter/stats.json，由 root 端读取。
  *   - com.thermalhunter：让 App 知道模块已被 LSPosed 激活。
- *   - 用户在设置里选择的应用：对其隐藏 VPN 状态（读本模块的世界可读配置决定是否启用）。
+ *
+ * VPN / 代理隐身只在 system_server 层实现：按 /data/system/thermalhunter/vpnhide.json 名单，
+ * 把交给目标应用的 NetworkCapabilities 抹掉 VPN 标志，并隐藏默认代理 / LinkProperties 里的 HttpProxy。
+ * 用户只需在 App 里勾选一次，无需再到 LSPosed 里给每个应用加作用域。
  *
  * 原则：任何异常都吞掉，绝不能让 system_server 崩溃。
  */
@@ -60,37 +59,15 @@ public class HookEntry implements IXposedHookLoadPackage {
             Stats.start();
             hookWakeLocks(lpparam.classLoader);
             hookAlarms(lpparam.classLoader);
-            hookConnectivityVpn(lpparam.classLoader);
+            hookConnectivityHide(lpparam.classLoader);
             return;
         }
-        // system_server 里还托管着 providers.settings / telecom / location.fused 等包，LSPosed 会用它们的包名
-        // 再回调一次。绝不能在系统 uid 进程里装应用级隐身 hook：那会让 ConnectivityService 把 VPN 网络当成
-        // 普通网络，5 秒后当作「无人需要」拆掉，所有 VPN/代理软件都会失效。
-        if (android.os.Process.myUid() % 100000 < 10000) return;
-        // 普通应用：若用户为它开启了「VPN 隐身」，则对其隐藏 VPN 相关信号
-        if (vpnHideEnabledFor(lpparam.packageName)) {
-            hookVpnHide();
-        }
+        // 其余包（含 system_server 托管的 providers.settings / telecom 等）一律不装 hook：
+        // VPN / 代理隐身统一由上面 system_server 层按名单完成，应用进程内不再注入。
+        // 这样用户只需在 App 里勾选一次，无需逐个配置 LSPosed 作用域。
     }
 
     // ---------------------------------------------------------------- VPN 隐身
-
-    /** 银行 / 金融类应用的代理检测属于风控，不对其生效。 */
-    private static final Set<String> VPN_HIDE_DENY = new java.util.HashSet<>(java.util.Arrays.asList(
-            "com.citiccard.mobilebank"));
-
-    /** 读取本模块的配置（LSPosed 远程偏好），判断某应用是否启用了 VPN 隐身。读不到即视为未启用。 */
-    private static boolean vpnHideEnabledFor(String pkg) {
-        if (VPN_HIDE_DENY.contains(pkg)) return false;
-        try {
-            XSharedPreferences prefs = new XSharedPreferences("com.thermalhunter", "hide");
-            prefs.reload();
-            Set<String> set = prefs.getStringSet("vpn_pkgs", null);
-            return set != null && set.contains(pkg);
-        } catch (Throwable t) {
-            return false;
-        }
-    }
 
     private static final int TRANSPORT_VPN = 4;
     private static final int NET_CAPABILITY_NOT_VPN = 15;
@@ -99,7 +76,65 @@ public class HookEntry implements IXposedHookLoadPackage {
 
     /** 目标应用的 appId 集合（名单里包名解析出的 uid），周期性刷新。 */
     private static volatile java.util.Set<Integer> sVpnHideAppIds = java.util.Collections.emptySet();
-    private static volatile long sVpnHideAt;
+    // 初值 -30s：开机头 30 秒 elapsedRealtime<30000，若初值 0 会误判「缓存未过期」而返回空名单，
+    // 导致刚开机这段时间 system_server 端 VPN 隐身不生效。
+    private static volatile long sVpnHideAt = -30_000L;
+
+    /**
+     * VPN 隐身总入口。Android 16 的 ConnectivityService 由 tethering mainline 模块的独立
+     * ClassLoader 加载（service-connectivity.jar 不在 SYSTEMSERVERCLASSPATH），lpparam.classLoader
+     * 找不到它；且开机早期 "connectivity" 服务可能尚未注册。故先尝试安装，失败则后台重试。
+     */
+    private static void hookConnectivityHide(ClassLoader cl) {
+        if (installConnectivityHooks(cl)) return;
+        Thread t = new Thread(() -> {
+            for (int i = 0; i < 24; i++) { // 每 5s 一次，最多 2 分钟
+                try {
+                    Thread.sleep(5000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (installConnectivityHooks(cl)) return;
+            }
+            XposedBridge.log(TAG + "ConnectivityService never appeared; VPN hide disabled");
+        }, "th-vpnhide-retry");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 解析并安装 NC + 代理两组 hook；ConnectivityService 尚不可用时返回 false。 */
+    private static boolean installConnectivityHooks(ClassLoader cl) {
+        Class<?> cs = findConnectivityService(cl);
+        if (cs == null) return false;
+        hookConnectivityVpn(cs);
+        hookProxyHide(cs);
+        return true;
+    }
+
+    /**
+     * 找 ConnectivityService 类：先用 system_server 的 ClassLoader；找不到再从
+     * ServiceManager 里 "connectivity" binder 实例拿它真正的（mainline 模块）ClassLoader。
+     */
+    private static Class<?> findConnectivityService(ClassLoader cl) {
+        Class<?> cs = XposedHelpers.findClassIfExists(
+                "android.net.connectivity.com.android.server.ConnectivityService", cl);
+        if (cs == null) cs = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", cl);
+        if (cs != null) return cs;
+        try {
+            // ServiceManager 是 @hide，反射调用
+            Object b = Class.forName("android.os.ServiceManager")
+                    .getMethod("getService", String.class).invoke(null, "connectivity");
+            if (b == null) return null;
+            ClassLoader bcl = b.getClass().getClassLoader();
+            cs = XposedHelpers.findClassIfExists(
+                    "android.net.connectivity.com.android.server.ConnectivityService", bcl);
+            if (cs == null) cs = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", bcl);
+            if (cs == null) cs = b.getClass();
+            return cs;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
 
     /**
      * 在 system_server 里 hook 「按调用方脱敏 NetworkCapabilities」的总闸：
@@ -107,14 +142,7 @@ public class HookEntry implements IXposedHookLoadPackage {
      * 拉取和回调两条路都经过此方法，native 调用方拿到的也是改过的 parcel。
      * 任何异常都吞掉，绝不能让 system_server 崩。
      */
-    private static void hookConnectivityVpn(ClassLoader cl) {
-        Class<?> cs = XposedHelpers.findClassIfExists(
-                "android.net.connectivity.com.android.server.ConnectivityService", cl);
-        if (cs == null) cs = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", cl);
-        if (cs == null) {
-            XposedBridge.log(TAG + "ConnectivityService class not found; VPN source-hide disabled");
-            return;
-        }
+    private static void hookConnectivityVpn(Class<?> cs) {
         try {
             XposedBridge.hookAllMethods(cs, "createWithLocationInfoSanitizedIfNecessaryWhenParceled",
                     new XC_MethodHook() {
@@ -123,6 +151,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                             try {
                                 Object nc = param.getResult();
                                 if (nc == null || param.args.length < 4) return;
+                                // 签名: (NetworkCapabilities, boolean includeLocationSensitiveInfo,
+                                //        int callingPid, int callingUid, String pkg, String attributionTag)
+                                // callingUid 是 args[3]（args[2] 是 pid）。回调路径也走这里，
+                                // 此时 Binder.getCallingUid() 是 system_server 自己，必须用参数里的 uid。
                                 Object uidArg = param.args[3];
                                 if (!(uidArg instanceof Integer)) return;
                                 int appId = ((Integer) uidArg) % 100000; // UserHandle.getAppId
@@ -149,24 +181,164 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    /** 名单包名 → appId 集合；每 30 秒刷新一次。读本模块配置 + /data/system/packages.list。 */
+    /**
+     * VPN 的 LinkProperties 可能带 HttpProxy（VPN 应用设置的分流代理）。应用经
+     * ConnectivityManager.getDefaultProxy() 拿到它——该 API 在本版本实际走 binder
+     * getProxyForNetwork(Network)（getDefaultProxy 已不在 ConnectivityService 上）。
+     * NetworkCapabilities 总闸拦不到这条路，故按调用方 uid 补一层：
+     *   - getProxyForNetwork -> null
+     *   - getLinkProperties / linkPropertiesRestrictedForCallerPermissions -> 克隆后抹掉 HttpProxy
+     *     （后者是拉取 + NetworkCallback 回调两条路的共同出口，用参数里的 uid 区分）
+     *   - 旧 API getNetworkInfo / getActiveNetworkInfo / getAllNetworkInfo 里的 VPN(17) -> WIFI(0)
+     * binder 入口用 Binder.getCallingUid() 区分调用方；system_server 内部调用（uid 1000）
+     * 不在名单里，不受影响。任何异常都吞掉。
+     */
+    private static void hookProxyHide(Class<?> cs) {
+        try {
+            java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(cs, "getProxyForNetwork",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                int appId = android.os.Binder.getCallingUid() % 100000;
+                                if (vpnHideAppIds().contains(appId)) param.setResult(null);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + "proxy-hide getProxyForNetwork hooks=" + uh.size());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "proxy-hide getProxyForNetwork failed: " + t);
+        }
+        // LinkProperties 拉取路径（binder getLinkProperties）
+        try {
+            java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(cs, "getLinkProperties",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Object lp = param.getResult();
+                                if (lp == null) return;
+                                int appId = android.os.Binder.getCallingUid() % 100000;
+                                if (!vpnHideAppIds().contains(appId)) return;
+                                if (XposedHelpers.callMethod(lp, "getHttpProxy") == null) return;
+                                // 克隆后改造，绝不动原对象
+                                Object copy = lp.getClass().getConstructor(lp.getClass()).newInstance(lp);
+                                XposedHelpers.callMethod(copy, "setHttpProxy", new Object[]{null});
+                                param.setResult(copy);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + "proxy-hide getLinkProperties hooks=" + uh.size());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "proxy-hide getLinkProperties failed: " + t);
+        }
+        // LinkProperties 回调路径：callCallbackForRequest 经此方法把 LP 交给 NetworkCallback，
+        // 此时 Binder.getCallingUid() 是 system_server 自己，必须用参数里的 uid（args[2]）。
+        // 签名: (LinkProperties, int callerPid, int callerUid)。拉取路径也会经过这里（幂等）。
+        try {
+            java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(cs,
+                    "linkPropertiesRestrictedForCallerPermissions",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Object lp = param.getResult();
+                                if (lp == null || param.args.length < 3) return;
+                                Object uidArg = param.args[2];
+                                if (!(uidArg instanceof Integer)) return;
+                                int appId = ((Integer) uidArg) % 100000;
+                                if (!vpnHideAppIds().contains(appId)) return;
+                                if (XposedHelpers.callMethod(lp, "getHttpProxy") == null) return;
+                                Object copy = lp.getClass().getConstructor(lp.getClass()).newInstance(lp);
+                                XposedHelpers.callMethod(copy, "setHttpProxy", new Object[]{null});
+                                param.setResult(copy);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + "proxy-hide linkPropertiesRestricted hooks=" + uh.size());
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + "proxy-hide linkPropertiesRestricted failed: " + t);
+        }
+        // 旧 API：NetworkInfo.getType() == TYPE_VPN(17) 也算 VPN，统一改成 WIFI(0)
+        XC_MethodHook niHook = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                try {
+                    int appId = android.os.Binder.getCallingUid() % 100000;
+                    if (!vpnHideAppIds().contains(appId)) return;
+                    Object res = param.getResult();
+                    if (res instanceof android.net.NetworkInfo[]) {
+                        android.net.NetworkInfo[] arr = (android.net.NetworkInfo[]) res;
+                        for (int i = 0; i < arr.length; i++) arr[i] = sanitizeNetworkInfo(arr[i]);
+                    } else if (res instanceof android.net.NetworkInfo) {
+                        param.setResult(sanitizeNetworkInfo((android.net.NetworkInfo) res));
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        };
+        for (String name : new String[]{"getNetworkInfo", "getActiveNetworkInfo", "getAllNetworkInfo"}) {
+            try {
+                java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(cs, name, niHook);
+                XposedBridge.log(TAG + "proxy-hide " + name + " hooks=" + uh.size());
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + "proxy-hide " + name + " failed: " + t);
+            }
+        }
+    }
+
+    /** VPN 类型的 NetworkInfo 换成 WIFI，其余原样返回。 */
+    private static android.net.NetworkInfo sanitizeNetworkInfo(android.net.NetworkInfo ni) {
+        if (ni == null || ni.getType() != android.net.ConnectivityManager.TYPE_VPN) return ni;
+        android.net.NetworkInfo fake = new android.net.NetworkInfo(
+                android.net.ConnectivityManager.TYPE_WIFI, 0, "WIFI", "");
+        // getDetailedState/setDetailedState 是 @hide，走反射避免 hidden API 限制
+        XposedHelpers.callMethod(fake, "setDetailedState",
+                XposedHelpers.callMethod(ni, "getDetailedState"), null, ni.getExtraInfo());
+        return fake;
+    }
+
+    /** 隐身名单：读 root 端写入的 /data/system/thermalhunter/vpnhide.json（字符串 JSON 数组）。
+     *  该目录归 system 所有，system_server 可读。名单由 App 通过 root 写入，改动最迟 30 秒生效。 */
+    private static java.util.Set<String> vpnHidePkgs() {
+        java.util.Set<String> pkgs = new java.util.HashSet<>();
+        try {
+            File f = new File(STATS_DIR, "vpnhide.json");
+            if (!f.exists()) return pkgs;
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new FileReader(f))) {
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+            }
+            JSONArray arr = new JSONArray(sb.toString());
+            for (int i = 0; i < arr.length(); i++) {
+                String p = arr.optString(i, "");
+                if (!p.isEmpty()) pkgs.add(p);
+            }
+        } catch (Throwable ignored) {
+        }
+        return pkgs;
+    }
+
+    /** 名单包名 → appId 集合；每 30 秒刷新一次。读 root 写入的名单 + /data/system/packages.list。 */
     private static java.util.Set<Integer> vpnHideAppIds() {
         long now = SystemClock.elapsedRealtime();
         if (now - sVpnHideAt < 30_000) return sVpnHideAppIds;
         sVpnHideAt = now;
         java.util.Set<Integer> ids = new java.util.HashSet<>();
         try {
-            XSharedPreferences prefs = new XSharedPreferences("com.thermalhunter", "hide");
-            prefs.reload();
-            Set<String> pkgs = prefs.getStringSet("vpn_pkgs", null);
-            if (pkgs != null && !pkgs.isEmpty()) {
+            java.util.Set<String> pkgs = vpnHidePkgs();
+            if (!pkgs.isEmpty()) {
                 try (BufferedReader br = new BufferedReader(new FileReader("/data/system/packages.list"))) {
                     String line;
                     while ((line = br.readLine()) != null) {
                         int sp = line.indexOf(' ');
                         if (sp <= 0) continue;
                         String pkg = line.substring(0, sp);
-                        if (!pkgs.contains(pkg) || VPN_HIDE_DENY.contains(pkg)) continue;
+                        if (!pkgs.contains(pkg)) continue;
                         int sp2 = line.indexOf(' ', sp + 1);
                         if (sp2 <= sp) continue;
                         try {
@@ -180,76 +352,6 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
         sVpnHideAppIds = ids;
         return ids;
-    }
-
-    /**
-     * 在应用进程内，让常见的 VPN / 代理检测 API 报告「没有 VPN」：
-     *   1. NetworkCapabilities.hasTransport(TRANSPORT_VPN) -> false
-     *   2. NetworkCapabilities.hasCapability(NET_CAPABILITY_NOT_VPN) -> true
-     *   3. NetworkInterface.getNetworkInterfaces() 过滤掉 tun/ppp/tap 接口
-     * 全部容错，任何失败都不影响应用运行。网络类由 boot ClassLoader 加载，故传 null。
-     */
-    private static void hookVpnHide() {
-        try {
-            XposedHelpers.findAndHookMethod("android.net.NetworkCapabilities", null, "hasTransport",
-                    int.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if ((int) param.args[0] == TRANSPORT_VPN) param.setResult(false);
-                        }
-                    });
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + "hasTransport hook failed: " + t);
-        }
-        try {
-            XposedHelpers.findAndHookMethod("android.net.NetworkCapabilities", null, "hasCapability",
-                    int.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            if ((int) param.args[0] == NET_CAPABILITY_NOT_VPN) param.setResult(true);
-                        }
-                    });
-        } catch (Throwable ignored) {
-        }
-        try {
-            XposedHelpers.findAndHookMethod("java.net.NetworkInterface", null, "getNetworkInterfaces",
-                    new XC_MethodHook() {
-                        @Override
-                        @SuppressWarnings("unchecked")
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            Object res = param.getResult();
-                            if (!(res instanceof Enumeration)) return;
-                            ArrayList<Object> kept = new ArrayList<>();
-                            Enumeration<Object> en = (Enumeration<Object>) res;
-                            while (en.hasMoreElements()) {
-                                Object ni = en.nextElement();
-                                String name = "";
-                                try {
-                                    name = String.valueOf(ni.getClass().getMethod("getName").invoke(ni));
-                                } catch (Throwable ignored) {
-                                }
-                                if (name.startsWith("tun") || name.startsWith("ppp") || name.startsWith("tap")) continue;
-                                kept.add(ni);
-                            }
-                            param.setResult(Collections.enumeration(kept));
-                        }
-                    });
-        } catch (Throwable ignored) {
-        }
-        try {
-            // 直接按名查接口（如 getByName("tun0")）：命中 VPN 接口名则返回 null
-            XposedHelpers.findAndHookMethod("java.net.NetworkInterface", null, "getByName",
-                    String.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            String n = (String) param.args[0];
-                            if (n != null && (n.startsWith("tun") || n.startsWith("ppp") || n.startsWith("tap"))) {
-                                param.setResult(null);
-                            }
-                        }
-                    });
-        } catch (Throwable ignored) {
-        }
     }
 
     // ---------------------------------------------------------------- wakelock
