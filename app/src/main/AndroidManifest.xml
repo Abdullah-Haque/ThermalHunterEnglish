@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 后台耗电监测：开机后重新注册每小时一次的（不唤醒设备的）检查 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="false"
@@ -38,6 +40,16 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-enabled floating overlay showing device temperature and top CPU-consuming processes in real time" />
         </service>
+
+        <!-- 后台耗电异常监测（用户可在设置中关闭） -->
+        <receiver
+            android:name=".ui.DrainWatcher"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Shizuku：接收 Shizuku 服务的 binder（ADB / shell 模式） -->
         <provider

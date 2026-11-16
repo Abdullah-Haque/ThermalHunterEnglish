@@ -224,17 +224,21 @@ final class Ui {
     }
 
     void bindAvatar(FrameLayout box, Entity e, String name) {
+        bindAvatar(box, appIcon(e), name, typeColor(e));
+    }
+
+    /** 有图标用图标，否则为 color 色块 + 名称首字。 */
+    void bindAvatar(FrameLayout box, Drawable d, String name, int color) {
         View[] v = (View[]) box.getTag();
         ImageView icon = (ImageView) v[0];
         TextView letter = (TextView) v[1];
-        Drawable d = appIcon(e);
         if (d != null) {
             icon.setImageDrawable(d);
             icon.setBackground(null);
             letter.setVisibility(View.GONE);
         } else {
             icon.setImageDrawable(null);
-            icon.setBackground(round(typeColor(e), dp(12)));
+            icon.setBackground(round(color, dp(12)));
             letter.setText(initial(name));
             letter.setVisibility(View.VISIBLE);
         }
@@ -270,6 +274,25 @@ final class Ui {
             }
         }
         return "?";
+    }
+
+    /** 页面内的分组标题。 */
+    TextView sectionTitle(String s) {
+        TextView t = text(s, 13, dim, true);
+        t.setPadding(dp(4), 0, 0, 0);
+        return t;
+    }
+
+    /** 带圆角背景的图标按钮（顶栏刷新、悬浮窗等）。 */
+    ImageView iconButton(int icon, String desc, View.OnClickListener l) {
+        ImageView b = new ImageView(ctx);
+        b.setImageResource(icon);
+        b.setColorFilter(fg);
+        b.setPadding(dp(10), dp(10), dp(10), dp(10));
+        b.setBackground(ripple(card(dp(21))));
+        b.setContentDescription(desc);
+        b.setOnClickListener(l);
+        return b;
     }
 
     static String adjName(int adj) {

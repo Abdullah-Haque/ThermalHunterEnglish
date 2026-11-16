@@ -55,13 +55,22 @@ public class MainActivity extends Activity implements Monitor.Listener {
             "通过 KernelSU 等获取超级用户权限，功能最完整",
             "通过无线调试 / ADB 以 shell 权限运行，无需 root（模块管理与杀进程不可用）"};
 
+    /** 底部导航：监控 / 耗电 / 工具 / 设置。 */
+    static final String EXTRA_PAGE = "page";
+    static final int PAGE_MONITOR = 0, PAGE_DRAIN = 1, PAGE_TOOLS = 2, PAGE_SETTINGS = 3;
+    private static final String[] PAGE_NAMES = {"监控", "耗电", "工具", "设置"};
+    private static final int[] PAGE_ICONS = {R.drawable.ic_monitor, R.drawable.ic_battery, R.drawable.ic_tools, R.drawable.ic_tune};
+
     private Monitor mon;
     private SharedPreferences prefs;
     private Ui u;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private Analyzer.Result result;
+    /** 监控页列表的分段：热源 / KSU / LSP / 唤醒。 */
     private int tab;
+    private int page = -1;
     private boolean pendingFloat;
+    private String connMode = "";
 
     private TextView headDevice, headKernel, modeChip, banner, emptyText, loadSummary, snack;
     private TextView heroLabel, heroTemp, heroTempSub, heroPowerLabel, heroPower, heroPowerSub;
@@ -74,10 +83,16 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private int lastCleanState = -1;
     private final TextView[] tabViews = new TextView[TABS.length];
     private ListView list;
-    private Button cleanBtn;
-    // 工具箱菜单首页：menuScreen 为默认首页，monitorScreen 为监控仪表盘子页
-    private View menuScreen, monitorScreen;
-    private TextView menuDevice, menuChip, menuMonitorDesc, menuVpnDesc, menuCompatDesc, menuShotDesc, menuCleanDesc, menuFloatDesc;
+    // 监控页的异常 / 清理卡片
+    private LinearLayout cleanCard;
+    private ImageView cleanIcon;
+    private TextView cleanTitle, cleanSub, cleanAction;
+    // 底部导航与各页
+    private final View[] pages = new View[PAGE_NAMES.length];
+    private final View[][] navItems = new View[PAGE_NAMES.length][]; // {item, pill, icon, label, dot}
+    private DrainPage drainPage;
+    private LinearLayout settingsBody;
+    private TextView toolVpnDesc, toolCompatDesc, toolShotDesc, toolFloatDesc, toolRefreshDesc;
     private final EntityAdapter adapter = new EntityAdapter();
     private final Runnable hideSnack = () -> snack.animate().alpha(0f).translationY(20f).setDuration(200)
             .withEndAction(() -> snack.setVisibility(View.GONE)).start();
@@ -90,11 +105,27 @@ public class MainActivity extends Activity implements Monitor.Listener {
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
         u = new Ui(this);
         getWindow().setStatusBarColor(u.bg);
-        getWindow().setNavigationBarColor(u.bg);
-        setContentView(buildLayout());
+        getWindow().setNavigationBarColor(u.card); // 与底部导航栏同色
         mon = Monitor.get(this);
+        setContentView(buildLayout());
+        int p = savedInstanceState != null ? savedInstanceState.getInt(EXTRA_PAGE, PAGE_MONITOR)
+                : getIntent().getIntExtra(EXTRA_PAGE, PAGE_MONITOR);
+        selectPage(p);
         syncVpnHideConfig(); // 把名单写到 system 可读的配置，VPN 隐身统一由 system_server 层按名单完成
         syncScreenshotConfig(); // 截图限制解除名单同理
+        DrainWatcher.schedule(this); // 后台耗电监测（按设置开关）
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent.hasExtra(EXTRA_PAGE)) selectPage(intent.getIntExtra(EXTRA_PAGE, PAGE_MONITOR));
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putInt(EXTRA_PAGE, page);
     }
 
     /** 只在界面可见时订阅采样；悬浮窗开启时由悬浮窗单独订阅。 */
@@ -129,6 +160,21 @@ public class MainActivity extends Activity implements Monitor.Listener {
         if (error) chip("");
     }
 
+    /** 不在监控页时放慢采样（5 秒），只用于保持连接状态与导航提示点。 */
+    @Override
+    public boolean wantsFast() {
+        return page == PAGE_MONITOR;
+    }
+
+    Monitor mon() {
+        return mon;
+    }
+
+    /** 当前连接方式："root" / "shell" / ""（未连接）。 */
+    String connMode() {
+        return connMode;
+    }
+
     // ------------------------------------------------------------------ 布局
 
     private View buildLayout() {
@@ -136,34 +182,140 @@ public class MainActivity extends Activity implements Monitor.Listener {
         frame.setBackgroundColor(u.bg);
         frame.setFitsSystemWindows(true);
         LinearLayout rootView = u.col();
-        monitorScreen = rootView;
         frame.addView(rootView, new FrameLayout.LayoutParams(-1, -1));
 
+        FrameLayout pageHost = new FrameLayout(this);
+        rootView.addView(pageHost, new LinearLayout.LayoutParams(-1, 0, 1));
+        pages[PAGE_MONITOR] = buildMonitorPage();
+        drainPage = new DrainPage(this, u);
+        pages[PAGE_DRAIN] = drainPage.view;
+        pages[PAGE_TOOLS] = buildToolsPage();
+        pages[PAGE_SETTINGS] = buildSettingsPage();
+        for (View v : pages) {
+            v.setVisibility(View.GONE);
+            pageHost.addView(v, new FrameLayout.LayoutParams(-1, -1));
+        }
+        rootView.addView(buildNav());
+
+        // 轻提示（替代系统 Toast），位于底部导航上方
+        snack = u.text("", 13, Color.WHITE, false);
+        snack.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(12));
+        snack.setLineSpacing(u.dp(2), 1f);
+        snack.setElevation(u.dp(6));
+        snack.setVisibility(View.GONE);
+        FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
+        sp.setMargins(u.dp(16), 0, u.dp(16), u.dp(80));
+        frame.addView(snack, sp);
+        return frame;
+    }
+
+    // ------------------------------------------------------------------ 底部导航
+
+    private View buildNav() {
+        LinearLayout nav = new LinearLayout(this);
+        nav.setBackgroundColor(u.card);
+        nav.setPadding(u.dp(8), u.dp(6), u.dp(8), u.dp(6));
+        nav.setElevation(u.dp(8));
+        for (int i = 0; i < PAGE_NAMES.length; i++) {
+            final int idx = i;
+            LinearLayout item = u.col();
+            item.setGravity(Gravity.CENTER_HORIZONTAL);
+            item.setPadding(0, u.dp(4), 0, u.dp(4));
+            item.setBackground(u.ripple(Ui.round(Color.TRANSPARENT, u.dp(16))));
+            FrameLayout pill = new FrameLayout(this);
+            ImageView icon = new ImageView(this);
+            icon.setImageResource(PAGE_ICONS[i]);
+            pill.addView(icon, new FrameLayout.LayoutParams(u.dp(22), u.dp(22), Gravity.CENTER));
+            View dot = new View(this);
+            GradientDrawable dd = new GradientDrawable();
+            dd.setShape(GradientDrawable.OVAL);
+            dd.setColor(u.bad);
+            dd.setStroke(u.dp(1.5f), u.card);
+            dot.setBackground(dd);
+            dot.setVisibility(View.GONE);
+            FrameLayout.LayoutParams dp = new FrameLayout.LayoutParams(u.dp(9), u.dp(9), Gravity.TOP | Gravity.END);
+            dp.setMargins(0, u.dp(3), u.dp(14), 0);
+            pill.addView(dot, dp);
+            item.addView(pill, new LinearLayout.LayoutParams(u.dp(60), u.dp(30)));
+            TextView label = u.text(PAGE_NAMES[i], 11, u.dim, true);
+            item.addView(label, Ui.lp(-2, -2, 0, u.dp(3), 0, 0));
+            item.setContentDescription(PAGE_NAMES[i]);
+            item.setOnClickListener(v -> selectPage(idx));
+            navItems[i] = new View[]{item, pill, icon, label, dot};
+            nav.addView(item, Ui.weight(1));
+        }
+        return nav;
+    }
+
+    private void selectPage(int p) {
+        if (p < 0 || p >= pages.length) p = PAGE_MONITOR;
+        if (p == page) {
+            // 再次点击当前页：回到顶部
+            if (p == PAGE_MONITOR && list != null) list.smoothScrollToPosition(0);
+            else if (pages[p] instanceof android.widget.ScrollView) ((android.widget.ScrollView) pages[p]).smoothScrollTo(0, 0);
+            return;
+        }
+        int prev = page;
+        page = p;
+        for (int i = 0; i < pages.length; i++) {
+            boolean sel = i == p;
+            if (sel) {
+                pages[i].setVisibility(View.VISIBLE);
+                if (prev >= 0) {
+                    pages[i].setAlpha(0f);
+                    pages[i].setTranslationY(u.dp(8));
+                    pages[i].animate().alpha(1f).translationY(0).setDuration(160).start();
+                }
+            } else {
+                pages[i].setVisibility(View.GONE);
+            }
+            View[] n = navItems[i];
+            n[1].setBackground(sel ? Ui.round(Ui.tint(u.accent), u.dp(15)) : null);
+            ((ImageView) n[2]).setColorFilter(sel ? u.accent : u.dim);
+            ((TextView) n[3]).setTextColor(sel ? u.accent : u.dim);
+        }
+        if (p == PAGE_DRAIN) drainPage.onShown();
+        if (p == PAGE_SETTINGS) fillSettings(); // 每次进入重建，开关状态与其他页保持一致
+        if (p == PAGE_TOOLS) refreshToolDescs();
+        mon.kick(); // 采样间隔可能变化
+    }
+
+    private void navDot(int p, boolean on) {
+        navItems[p][4].setVisibility(on ? View.VISIBLE : View.GONE);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (page != PAGE_MONITOR) selectPage(PAGE_MONITOR);
+        else super.onBackPressed();
+    }
+
+    // ------------------------------------------------------------------ 监控页
+
+    private View buildMonitorPage() {
         // 头部（随列表一起滚动）
         LinearLayout header = u.col();
         header.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(6));
 
-        // 顶栏：返回 / 标题 / 设备 / 模式标签 / 悬浮窗 / 设置
+        // 顶栏：标题 / 设备 / 模式标签 / 悬浮窗
         LinearLayout top = u.row();
-        top.addView(iconButton(R.drawable.ic_back, "返回菜单", v -> showMenu()),
-                Ui.lp(u.dp(42), u.dp(42), 0, 0, u.dp(8), 0));
         LinearLayout titleCol = u.col();
-        titleCol.addView(u.text("热源猎手", 24, u.fg, true));
+        LinearLayout titleRow = u.row();
+        titleRow.addView(u.text("热源猎手", 24, u.fg, true));
+        modeChip = u.chip("", u.dim);
+        titleRow.addView(modeChip, Ui.lp(-2, -2, u.dp(10), 0, 0, 0));
+        titleCol.addView(titleRow);
         headDevice = u.text("正在连接…", 12, u.dim, false);
         headDevice.setSingleLine(true);
         headDevice.setEllipsize(TextUtils.TruncateAt.END);
-        titleCol.addView(headDevice);
+        titleCol.addView(headDevice, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
         headKernel = u.text("", 11, u.dim, false);
         headKernel.setSingleLine(true);
         headKernel.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         titleCol.addView(headKernel);
         top.addView(titleCol, Ui.weight(1));
-        modeChip = u.chip("", u.dim);
-        top.addView(modeChip, Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
-        floatBtn = iconButton(R.drawable.ic_float, "悬浮窗", v -> toggleFloat());
+        floatBtn = u.iconButton(R.drawable.ic_float, "悬浮窗", v -> toggleFloat());
         top.addView(floatBtn, Ui.lp(u.dp(42), u.dp(42), u.dp(8), 0, 0, 0));
-        top.addView(iconButton(R.drawable.ic_tune, "设置", v -> showSettings()),
-                Ui.lp(u.dp(42), u.dp(42), u.dp(8), 0, 0, 0));
         header.addView(top);
         chip("");
 
@@ -207,6 +359,29 @@ public class MainActivity extends Activity implements Monitor.Listener {
         load.addView(clusterRow, Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
         header.addView(load, Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
 
+        // 异常 / 一键清理卡片（取代原来固定在底部的大按钮）
+        cleanCard = u.row();
+        cleanCard.setPadding(u.dp(14), u.dp(12), u.dp(14), u.dp(12));
+        FrameLayout ib = new FrameLayout(this);
+        cleanIcon = new ImageView(this);
+        cleanIcon.setImageResource(R.drawable.ic_clean);
+        ib.addView(cleanIcon, new FrameLayout.LayoutParams(u.dp(22), u.dp(22), Gravity.CENTER));
+        cleanCard.addView(ib, Ui.lp(u.dp(40), u.dp(40), 0, 0, u.dp(12), 0));
+        LinearLayout cc = u.col();
+        cleanTitle = u.text("正在检测…", 15, u.fg, true);
+        cleanSub = u.text("", 12, u.dim, false);
+        cleanSub.setSingleLine(true);
+        cleanSub.setEllipsize(TextUtils.TruncateAt.END);
+        cc.addView(cleanTitle);
+        cc.addView(cleanSub, Ui.lp(-1, -2, 0, u.dp(1), 0, 0));
+        cleanCard.addView(cc, Ui.weight(1));
+        cleanAction = u.text("一键清理", 13, Color.WHITE, true);
+        cleanAction.setPadding(u.dp(14), u.dp(8), u.dp(14), u.dp(8));
+        cleanCard.addView(cleanAction, Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
+        cleanCard.setOnClickListener(v -> confirmClean());
+        header.addView(cleanCard, Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
+        paintCleanCard(0);
+
         // 提示条
         banner = u.note("", u.warn);
         banner.setTextSize(12);
@@ -232,7 +407,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
             tabViews[i] = t;
             tabs.addView(t, Ui.weight(1));
         }
-        header.addView(tabs, Ui.lp(-1, -2, 0, u.dp(14), 0, u.dp(4)));
+        header.addView(tabs, Ui.lp(-1, -2, 0, u.dp(16), 0, u.dp(4)));
         updateTabs();
 
         // 自动归因状态（仅 LSP 模块页、root 模式）
@@ -244,8 +419,9 @@ public class MainActivity extends Activity implements Monitor.Listener {
         list = new ListView(this);
         list.setDivider(null);
         list.setSelector(new ColorDrawable(Color.TRANSPARENT)); // 卡片自带水波纹
-        list.setPadding(0, 0, 0, u.dp(8));
+        list.setPadding(0, 0, 0, u.dp(12));
         list.setClipToPadding(false);
+        list.setVerticalScrollBarEnabled(false);
         list.addHeaderView(header, null, false);
         LinearLayout footer = new LinearLayout(this);
         emptyText = u.text("正在采集…", 13, u.dim, false);
@@ -258,100 +434,69 @@ public class MainActivity extends Activity implements Monitor.Listener {
             Object o = p.getItemAtPosition(pos);
             if (o instanceof Entity) showDetail((Entity) o);
         });
-        rootView.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setPadding(u.dp(16), u.dp(8), u.dp(16), u.dp(14));
-        cleanBtn = new Button(this);
-        cleanBtn.setText("一键清理异常");
-        cleanBtn.setTextColor(Color.WHITE);
-        cleanBtn.setTextSize(16);
-        cleanBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        cleanBtn.setAllCaps(false);
-        cleanBtn.setStateListAnimator(null);
-        cleanBtn.setElevation(u.dp(3));
-        cleanBtn.setBackground(u.ripple(Ui.round(u.accent, u.dp(26))));
-        cleanBtn.setOnClickListener(v -> confirmClean());
-        bottom.addView(cleanBtn, new LinearLayout.LayoutParams(-1, u.dp(52)));
-        rootView.addView(bottom);
-
-        // 工具箱菜单首页（默认显示）；监控仪表盘作为子页，点菜单进入、返回键回到菜单
-        menuScreen = buildMenu();
-        frame.addView(menuScreen, new FrameLayout.LayoutParams(-1, -1));
-        monitorScreen.setVisibility(View.GONE);
-
-        // 轻提示（替代系统 Toast）
-        snack = u.text("", 13, Color.WHITE, false);
-        snack.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(12));
-        snack.setLineSpacing(u.dp(2), 1f);
-        snack.setElevation(u.dp(6));
-        snack.setVisibility(View.GONE);
-        FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-        sp.setMargins(u.dp(16), 0, u.dp(16), u.dp(80));
-        frame.addView(snack, sp);
-        return frame;
+        return list;
     }
 
-    // ------------------------------------------------------------------ 工具箱菜单首页
+    /** 异常卡片配色：有异常为红色，否则为绿色的「状态良好」。 */
+    private void paintCleanCard(int bad) {
+        int state = bad > 0 ? 1 : 0;
+        if (state == lastCleanState) return;
+        lastCleanState = state;
+        int c = bad > 0 ? u.bad : u.good;
+        GradientDrawable bgd = Ui.round(bad > 0 ? u.badCard : u.card, u.dp(20));
+        bgd.setStroke(u.dp(1), bad > 0 ? Ui.alpha(u.bad, 0x55) : u.stroke);
+        cleanCard.setBackground(u.ripple(bgd));
+        ((View) cleanIcon.getParent()).setBackground(Ui.round(Ui.tint(c), u.dp(14)));
+        cleanIcon.setColorFilter(c);
+        cleanAction.setTextColor(bad > 0 ? Color.WHITE : u.fg);
+        cleanAction.setBackground(Ui.round(bad > 0 ? u.bad : u.sunken, u.dp(16)));
+    }
 
-    private View buildMenu() {
+    // ------------------------------------------------------------------ 工具页
+
+    private View buildToolsPage() {
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
         sv.setFillViewport(true);
         sv.setVerticalScrollBarEnabled(false);
         LinearLayout col = u.col();
-        col.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(28));
+        col.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(24));
+        col.addView(u.text("工具", 24, u.fg, true));
+        col.addView(u.text("系统层修复与实用功能", 12, u.dim, false), Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
 
-        LinearLayout top = u.row();
-        LinearLayout titleCol = u.col();
-        titleCol.addView(u.text("热源猎手", 24, u.fg, true));
-        menuDevice = u.text("正在连接…", 12, u.dim, false);
-        menuDevice.setSingleLine(true);
-        menuDevice.setEllipsize(TextUtils.TruncateAt.END);
-        titleCol.addView(menuDevice);
-        top.addView(titleCol, Ui.weight(1));
-        menuChip = u.chip("", u.dim);
-        top.addView(menuChip, Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
-        col.addView(top);
-
-        col.addView(u.text("工具", 13, u.dim, true), Ui.lp(-1, -2, u.dp(2), u.dp(20), 0, u.dp(10)));
-
-        menuMonitorDesc = u.text("正在采集…", 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_temp, u.accent, "温度 / 负载监控", menuMonitorDesc, this::showMonitor),
+        col.addView(u.sectionTitle("应用兼容"), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
+        toolVpnDesc = u.text(vpnHideSummary(), 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_vpn, u.good, "VPN 隐身", toolVpnDesc, this::openVpnHidePicker),
                 Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-
-        menuVpnDesc = u.text(vpnHideSummary(), 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_vpn, u.good, "VPN 隐身", menuVpnDesc, this::openVpnHidePicker),
+        toolCompatDesc = u.text("正在检测状态…", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_compat, 0xFFF59E0B, "加固应用兼容修复", toolCompatDesc, this::openCompatSheet),
                 Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
+        toolShotDesc = u.text(shotSummary(), 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_shot, 0xFF10B981, "截图限制解除", toolShotDesc, this::openShotPicker),
+                Ui.lp(-1, -2, 0, 0, 0, 0));
 
-        menuCompatDesc = u.text("正在检测状态…", 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_compat, 0xFFF59E0B, "加固应用兼容修复", menuCompatDesc, this::openCompatSheet),
+        col.addView(u.sectionTitle("显示"), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
+        toolRefreshDesc = u.text(refreshSummary(), 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_refresh, 0xFF8B5CF6, "屏幕刷新率", toolRefreshDesc, this::openRefreshSheet),
                 Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-        CompatFix.query((ok, msg, st) -> {
-            if (menuCompatDesc != null) menuCompatDesc.setText(ok ? CompatFix.desc(st) : "需要 root · 点击查看");
-        });
-
-        menuShotDesc = u.text(shotSummary(), 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_shot, 0xFF10B981, "截图限制解除", menuShotDesc, this::openShotPicker),
-                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-
-        menuCleanDesc = u.text("检测发热 / 耗电异常并处理", 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_clean, u.bad, "一键清理异常", menuCleanDesc, this::confirmClean),
-                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-
-        col.addView(menuCard(R.drawable.ic_refresh, 0xFF8B5CF6, "屏幕刷新率",
-                u.text("锁定高刷，忽略系统按应用限频", 12, u.dim, false), this::openRefreshSheet),
-                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-
-        menuFloatDesc = u.text(FloatService.isRunning() ? "已开启" : "已关闭", 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_float, 0xFF0EA5E9, "悬浮窗", menuFloatDesc, this::toggleFloat),
-                Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-
-        col.addView(menuCard(R.drawable.ic_tune, u.dim, "设置",
-                u.text("工作模式、自动归因、清理选项、判定规则", 12, u.dim, false), this::showSettings),
+        toolFloatDesc = u.text("", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_float, 0xFF0EA5E9, "悬浮窗", toolFloatDesc, this::toggleFloat),
                 Ui.lp(-1, -2, 0, 0, 0, 0));
 
         sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
         return sv;
+    }
+
+    private void refreshToolDescs() {
+        toolVpnDesc.setText(vpnHideSummary());
+        toolShotDesc.setText(shotSummary());
+        toolRefreshDesc.setText(refreshSummary());
+        updateFloatBtn();
+        CompatFix.query((ok, msg, st) -> toolCompatDesc.setText(ok ? CompatFix.desc(st) : "需要 root · 点击查看"));
+    }
+
+    private String refreshSummary() {
+        int fps = prefs.getInt("lock_fps", 0);
+        return fps > 0 ? "已锁定 " + fps + "Hz · App 运行期间保持" : "由系统自动调节 · 可锁定高刷";
     }
 
     /** 菜单卡片：左侧彩色图标 + 标题 + 描述 + 右箭头。desc 由调用方传入以便动态更新。 */
@@ -376,33 +521,6 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return r;
     }
 
-    private void showMonitor() {
-        menuScreen.setVisibility(View.GONE);
-        monitorScreen.setVisibility(View.VISIBLE);
-    }
-
-    private void showMenu() {
-        monitorScreen.setVisibility(View.GONE);
-        menuScreen.setVisibility(View.VISIBLE);
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (monitorScreen != null && monitorScreen.getVisibility() == View.VISIBLE) showMenu();
-        else super.onBackPressed();
-    }
-
-    private ImageView iconButton(int icon, String desc, View.OnClickListener l) {
-        ImageView b = new ImageView(this);
-        b.setImageResource(icon);
-        b.setColorFilter(u.fg);
-        b.setPadding(u.dp(10), u.dp(10), u.dp(10), u.dp(10));
-        b.setBackground(u.ripple(u.card(u.dp(21))));
-        b.setContentDescription(desc);
-        b.setOnClickListener(l);
-        return b;
-    }
-
     private void updateTabs() {
         for (int i = 0; i < tabViews.length; i++) {
             boolean sel = i == tab;
@@ -425,14 +543,9 @@ public class MainActivity extends Activity implements Monitor.Listener {
         modeChip.setText("root".equals(mode) ? "ROOT" : "shell".equals(mode) ? "SHIZUKU" : "未连接");
         modeChip.setTextColor(col);
         modeChip.setBackground(Ui.round(Ui.tint(col), u.dp(10)));
-        if (menuChip != null) {
-            menuChip.setText(modeChip.getText());
-            menuChip.setTextColor(col);
-            menuChip.setBackground(Ui.round(Ui.tint(col), u.dp(10)));
-        }
     }
 
-    private void snack(String msg, boolean ok) {
+    void snack(String msg, boolean ok) {
         snack.setText(msg);
         snack.setBackground(Ui.round(ok ? (u.night ? 0xFF2A2F36 : 0xFF1F2328) : u.bad, u.dp(14)));
         ui.removeCallbacks(hideSnack);
@@ -450,6 +563,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         result = r;
         JSONObject s = r.snap;
         String mode = s.optString("mode");
+        connMode = mode;
         boolean shell = "shell".equals(mode);
         chip(mode);
         JSONObject dev = s.optJSONObject("device");
@@ -526,12 +640,16 @@ public class MainActivity extends Activity implements Monitor.Listener {
         if (notes.isEmpty()) banner.setVisibility(View.GONE);
         else banner(TextUtils.join("\n", notes), shell ? u.accent : u.warn);
 
-        cleanBtn.setText(r.badCount > 0 ? "一键清理异常（" + r.badCount + "）" : "一键清理异常");
-        int cleanState = r.badCount > 0 ? 1 : 0;
-        if (cleanState != lastCleanState) {
-            lastCleanState = cleanState;
-            cleanBtn.setBackground(u.ripple(Ui.round(cleanState == 1 ? u.bad : u.accent, u.dp(26))));
+        paintCleanCard(r.badCount);
+        if (r.badCount > 0) {
+            cleanTitle.setText("发现 " + r.badCount + " 个异常对象");
+            cleanSub.setText(cleanPreview(r));
+        } else {
+            cleanTitle.setText("未发现异常");
+            cleanSub.setText("没有明显的发热 / 耗电元凶");
         }
+        navDot(PAGE_MONITOR, r.badCount > 0);
+        navDot(PAGE_DRAIN, drainPage.hasBad());
         tabCounts[0] = flagged(r.heat);
         tabCounts[1] = flagged(r.ksu);
         tabCounts[2] = flagged(r.lsp);
@@ -555,19 +673,17 @@ public class MainActivity extends Activity implements Monitor.Listener {
         if (tab == 2 && !shell) profStatus.setText(profStatusText(r));
         emptyText.setText(emptyMessage(shell));
         emptyText.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
+    }
 
-        // 菜单首页的动态描述（即使菜单当前不可见也保持最新，切回即见）
-        if (menuMonitorDesc != null) {
-            String t = mainTemp > -999 ? Analyzer.fmt(mainTemp) + "°C" : "--";
-            menuMonitorDesc.setText("当前 " + t + (r.discharging ? " · 放电中" : "") + " · 点击查看排行");
+    /** 异常卡片的副标题：列出前几个异常对象的名称。 */
+    private String cleanPreview(Analyzer.Result r) {
+        List<String> names = new ArrayList<>();
+        for (List<Entity> l : java.util.Arrays.asList(r.heat, r.ksu, r.lsp)) {
+            for (Entity e : l) {
+                if (e.level == Analyzer.BAD && names.size() < 3 && !names.contains(u.label(e))) names.add(u.label(e));
+            }
         }
-        if (menuCleanDesc != null) {
-            menuCleanDesc.setText(r.badCount > 0 ? r.badCount + " 个异常对象待处理" : "当前状态良好，无异常");
-        }
-        if (menuDevice != null && dev != null) {
-            menuDevice.setText(dev.optString("model") + " · " + dev.optString("soc")
-                    + " · Android " + dev.optString("android"));
-        }
+        return names.isEmpty() ? "点击查看并处理" : TextUtils.join("、", names) + (r.badCount > names.size() ? " 等" : "");
     }
 
     private static int flagged(List<Entity> l) {
@@ -877,7 +993,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
     }
 
     /** 每行最多 3 个数据块。 */
-    private View statGrid(List<Object[]> stats) {
+    View statGrid(List<Object[]> stats) {
         LinearLayout grid = u.col();
         LinearLayout row = null;
         for (int i = 0; i < stats.size(); i++) {
@@ -908,14 +1024,14 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return cmds;
     }
 
-    private void confirm(String title, String msg, String okLabel, Runnable ok) {
+    void confirm(String title, String msg, String okLabel, Runnable ok) {
         new Sheet(this, u).title(title, msg)
                 .action(okLabel, Sheet.DANGER_FILLED, ok)
                 .action("取消", Sheet.NORMAL, null)
                 .show();
     }
 
-    private void run(String cmd) {
+    void run(String cmd) {
         List<String> l = new ArrayList<>();
         l.add(cmd);
         runAll(l);
@@ -1056,11 +1172,30 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
     // ------------------------------------------------------------------ 设置
 
-    private void showSettings() {
-        Sheet s = new Sheet(this, u).title("设置", null);
+    private View buildSettingsPage() {
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.setFillViewport(true);
+        sv.setVerticalScrollBarEnabled(false);
+        LinearLayout col = u.col();
+        col.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(24));
+        col.addView(u.text("设置", 24, u.fg, true));
+        settingsBody = u.col();
+        col.addView(settingsBody, new LinearLayout.LayoutParams(-1, -2));
+        sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
+        return sv;
+    }
 
-        s.section("工作模式");
-        String cur = prefs.getString("work_mode", "auto");
+    private void settingsSection(String title) {
+        settingsBody.addView(u.sectionTitle(title), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
+    }
+
+    /** 重建设置页内容（每次进入设置页时调用）。 */
+    private void fillSettings() {
+        LinearLayout s = settingsBody;
+        s.removeAllViews();
+
+        settingsSection("工作模式");
+        String conn = "root".equals(connMode) ? "当前已通过 root 连接" : "shell".equals(connMode) ? "当前已通过 Shizuku 连接" : "当前未连接";
         List<View[]> opts = new ArrayList<>();
         for (int i = 0; i < Monitor.MODES.length; i++) {
             final String mode = Monitor.MODES[i];
@@ -1075,14 +1210,14 @@ public class MainActivity extends Activity implements Monitor.Listener {
             c.addView(d, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
             r.addView(c, Ui.weight(1));
             opts.add(new View[]{r, ind});
-            s.add(r, Ui.lp(-1, -2, 0, i > 0 ? u.dp(8) : 0, 0, 0));
+            s.addView(r, Ui.lp(-1, -2, 0, i > 0 ? u.dp(8) : 0, 0, 0));
             r.setTag(mode);
         }
         Runnable paint = () -> {
             String m = prefs.getString("work_mode", "auto");
             for (View[] o : opts) {
                 boolean sel = m.equals(o[0].getTag());
-                GradientDrawable g = Ui.round(sel ? Ui.tint(u.accent) : u.sunken, u.dp(14));
+                GradientDrawable g = sel ? Ui.round(Ui.tint(u.accent), u.dp(16)) : u.card(u.dp(16));
                 if (sel) g.setStroke(u.dp(1), Ui.alpha(u.accent, 0x99));
                 o[0].setBackground(u.ripple(g));
                 o[1].setBackground(radio(sel));
@@ -1095,34 +1230,63 @@ public class MainActivity extends Activity implements Monitor.Listener {
                 prefs.edit().putString("work_mode", m).apply();
                 paint.run();
                 mon.reconnect(); // 关闭当前会话，按新模式重连
+                snack("已切换为「" + MODE_NAMES[java.util.Arrays.asList(Monitor.MODES).indexOf(m)] + "」，正在重新连接…", true);
             });
         }
         paint.run();
+        s.addView(u.text(conn, 12, u.dim, false), Ui.lp(-1, -2, u.dp(4), u.dp(8), 0, 0));
 
-        s.section("LSP 模块");
-        s.add(switchRow("自动归因模块占用（root）",
+        settingsSection("耗电统计");
+        s.addView(switchRow("后台监测耗电异常",
+                "约每小时读取一次系统耗电统计（不唤醒手机、不常驻后台），发现应用长时间后台持锁、频繁唤醒、"
+                        + "待机掉电过快等严重异常时发通知（需要 root）",
+                DrainWatcher.enabled(this), on -> DrainWatcher.setEnabled(this, on)));
+
+        settingsSection("LSP 模块");
+        s.addView(switchRow("自动归因模块占用（root）",
                 "用系统自带的 simpleperf 每 30 秒低频采样一次注入模块的进程，按调用栈算出每个模块实际消耗的 CPU；"
                         + "会额外占用少量 CPU，只在界面或悬浮窗开启时运行",
                 mon.autoProfEnabled(), on -> mon.setAutoProf(on)));
 
-        s.section("一键清理");
-        s.add(switchRow("同时处理前台应用", "默认只处理后台的异常应用",
+        settingsSection("一键清理");
+        s.addView(switchRow("同时处理前台应用", "默认只处理后台的异常应用",
                 prefs.getBoolean("clean_foreground", false),
                 on -> prefs.edit().putBoolean("clean_foreground", on).apply()));
-        s.add(switchRow("直接禁用异常的 KSU / LSP 模块", "关闭时只杀死模块进程；禁用需重启手机才能完全生效",
+        s.addView(switchRow("直接禁用异常的 KSU / LSP 模块", "关闭时只杀死模块进程；禁用需重启手机才能完全生效",
                 prefs.getBoolean("clean_disable_modules", false),
-                on -> prefs.edit().putBoolean("clean_disable_modules", on).apply()));
+                on -> prefs.edit().putBoolean("clean_disable_modules", on).apply()), Ui.lp(-1, -2, 0, u.dp(8), 0, 0));
 
-        s.section("判定规则（单核 CPU%，约 15 秒平均）");
-        s.add(u.note("· 任意应用 ≥35%；后台 ≥10%；缓存进程 ≥3%\n"
+        settingsSection("判定规则");
+        s.addView(u.note("实时（单核 CPU%，约 15 秒平均）\n"
+                + "· 任意应用 ≥35%；后台 ≥10%；缓存进程 ≥3%\n"
                 + "· KSU 模块进程合计 ≥5%；其他 native 进程 ≥20%\n"
                 + "· 后台持唤醒锁 ≥50% 时间，或唤醒闹钟 ≥6 次/分\n"
-                + "· LSP 模块：自身后台 ≥8%；作用域内有异常应用时提示嫌疑", u.dim));
+                + "· LSP 模块：自身后台 ≥8%；作用域内有异常应用时提示嫌疑\n\n"
+                + "长时（自上次充满电，放电 ≥30 分钟后判定）\n"
+                + "· 后台持锁 ≥20 分钟且占放电时长 ≥15%\n"
+                + "· 唤醒闹钟 ≥30 次/小时；后台定位 ≥2 小时\n"
+                + "· CPU 时间超过前台时长 90 分钟以上\n"
+                + "· 前台 <15 分钟却占应用总耗电 ≥8%\n"
+                + "· 熄屏待机 ≥3%/小时；熄屏唤醒占比 ≥40%", u.dim));
 
-        s.action("重启手机", Sheet.DANGER, () -> confirm("立即重启手机？",
+        settingsSection("系统");
+        TextView reboot = u.text("重启手机", 15, u.bad, true);
+        reboot.setGravity(Gravity.CENTER);
+        reboot.setPadding(0, u.dp(13), 0, u.dp(13));
+        reboot.setBackground(u.ripple(Ui.round(Ui.tint(u.bad), u.dp(16))));
+        reboot.setOnClickListener(v -> confirm("立即重启手机？",
                 "模块禁用需要重启才能完全生效。", "重启", () -> run("REBOOT")));
-        s.action("完成", Sheet.PRIMARY, null);
-        s.show();
+        s.addView(reboot);
+
+        String ver = "";
+        try {
+            ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        TextView about = u.text("热源猎手 " + ver + "\n所有数据只在本机处理，不联网", 12, u.dim, false);
+        about.setGravity(Gravity.CENTER);
+        about.setLineSpacing(u.dp(2), 1f);
+        s.addView(about, Ui.lp(-1, -2, 0, u.dp(24), 0, 0));
     }
 
     /** 单选指示器：选中为实心圆点 + 外环。 */
@@ -1140,14 +1304,14 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return ld;
     }
 
-    private interface OnToggle {
+    interface OnToggle {
         void onToggle(boolean on);
     }
 
-    private View switchRow(String title, String desc, boolean checked, OnToggle l) {
+    View switchRow(String title, String desc, boolean checked, OnToggle l) {
         LinearLayout r = u.row();
         r.setPadding(u.dp(14), u.dp(12), u.dp(10), u.dp(12));
-        r.setBackground(Ui.round(u.sunken, u.dp(14)));
+        r.setBackground(u.ripple(u.card(u.dp(16))));
         LinearLayout c = u.col();
         c.addView(u.text(title, 15, u.fg, true));
         TextView d = u.text(desc, 12, u.dim, false);
@@ -1192,6 +1356,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
     private void applyRefresh(int fps) {
         prefs.edit().putInt("lock_fps", fps).apply(); // 记住选择，App 运行时自动保持
+        toolRefreshDesc.setText(refreshSummary());
         mon.call("REFRESH_SET " + fps, r ->
                 snack(r.optBoolean("ok") ? r.optString("msg") : (r.has("error") ? r.optString("error") : "设置失败"),
                         r.optBoolean("ok")));
@@ -1205,7 +1370,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
             snack.setVisibility(View.GONE);
             if (!ok || st == null) {
                 snack(msg, false);
-                if (menuCompatDesc != null) menuCompatDesc.setText("需要 root · 点击查看");
+                toolCompatDesc.setText("需要 root · 点击查看");
                 return;
             }
             Sheet s = new Sheet(this, u).title("加固应用兼容修复", st.active
@@ -1236,8 +1401,8 @@ public class MainActivity extends Activity implements Monitor.Listener {
         snack(enable ? "正在启用…" : "正在还原…", true);
         CompatFix.set(enable, (ok, msg, st) -> {
             snack(msg, ok);
-            if (menuCompatDesc != null && st != null) menuCompatDesc.setText(CompatFix.desc(st));
-            else if (menuCompatDesc != null) menuCompatDesc.setText(ok ? CompatFix.desc(null) : "需要 root · 点击查看");
+            if (st != null) toolCompatDesc.setText(CompatFix.desc(st));
+            else toolCompatDesc.setText(ok ? CompatFix.desc(null) : "需要 root · 点击查看");
         });
     }
 
@@ -1387,7 +1552,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         s.action("保存", Sheet.PRIMARY, () -> {
             hidePrefs().edit().putStringSet("vpn_pkgs", working).commit();
             syncVpnHideConfig();
-            if (menuVpnDesc != null) menuVpnDesc.setText(vpnHideSummary());
+            toolVpnDesc.setText(vpnHideSummary());
             snack(working.isEmpty() ? "已清空 VPN 隐身列表"
                     : "已对 " + working.size() + " 个应用启用，重启该应用后生效", true);
         });
@@ -1534,7 +1699,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         s.action("保存", Sheet.PRIMARY, () -> {
             shotPrefs().edit().putStringSet("pkgs", working).commit();
             syncScreenshotConfig();
-            if (menuShotDesc != null) menuShotDesc.setText(shotSummary());
+            toolShotDesc.setText(shotSummary());
             snack(working.isEmpty() ? "已清空截图解除列表"
                     : "已对 " + working.size() + " 个应用解除，重启该应用后生效", true);
         });
@@ -1576,7 +1741,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         boolean on = FloatService.isRunning();
         floatBtn.setColorFilter(on ? Color.WHITE : u.fg);
         floatBtn.setBackground(u.ripple(on ? Ui.round(u.accent, u.dp(21)) : u.card(u.dp(21))));
-        if (menuFloatDesc != null) menuFloatDesc.setText(on ? "已开启 · 点击关闭" : "已关闭 · 点击开启");
+        if (toolFloatDesc != null) toolFloatDesc.setText(on ? "已开启 · 点击关闭" : "在任意界面上方显示温度与热源 · 点击开启");
     }
 
     // ------------------------------------------------------------------ 列表

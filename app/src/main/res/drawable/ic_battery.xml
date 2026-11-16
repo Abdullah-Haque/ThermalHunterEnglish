@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 耗电统计图标：电池 + 闪电 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="#FF000000" android:strokeWidth="1.8"
+        android:pathData="M9,4.5h6a2,2 0,0 1,2 2v12.5a2,2 0,0 1,-2 2h-6a2,2 0,0 1,-2 -2v-12.5a2,2 0,0 1,2 -2z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M10,2h4v1.6h-4z" />
+    <path android:fillColor="#FF000000"
+        android:pathData="M12.8,7.5l-3.3,5.2h2.3l-0.6,4.3l3.3,-5.2h-2.3z" />
+</vector>

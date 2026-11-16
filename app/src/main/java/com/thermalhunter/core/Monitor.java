@@ -162,8 +162,20 @@ public final class Monitor {
     /** 执行一条命令并把原始 JSON 结果交回主线程（用于深度分析等耗时操作，期间实时采样暂停）。 */
     public void call(String cmd, Reply reply) {
         bg.post(() -> {
-            JSONObject r = root.safeCall(cmd);
-            ui.post(() -> reply.onReply(r));
+            JSONObject r;
+            String err = root.isAlive() ? null : connect();
+            if (err != null) {
+                r = new JSONObject();
+                try {
+                    r.put("ok", false);
+                    r.put("error", err);
+                } catch (Exception ignored) {
+                }
+            } else {
+                r = root.safeCall(cmd);
+            }
+            final JSONObject fr = r;
+            ui.post(() -> reply.onReply(fr));
             kick();
         });
     }

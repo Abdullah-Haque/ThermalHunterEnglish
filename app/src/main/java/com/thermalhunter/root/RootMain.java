@@ -72,6 +72,19 @@ public final class RootMain {
 
     private static AutoProfiler autoProfiler;
 
+    /** 读取 dumpsys batterystats -c 并流式解析（输出含历史记录，可能有数 MB，不能整段读入）。 */
+    private static JSONObject drain() throws Exception {
+        Process p = new ProcessBuilder("dumpsys", "batterystats", "-c").redirectErrorStream(true).start();
+        p.getOutputStream().close();
+        JSONObject r;
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8), 1 << 16)) {
+            r = com.thermalhunter.core.DrainStats.parse(in);
+        } finally {
+            p.destroy();
+        }
+        return r;
+    }
+
     /** 以 shell 身份运行时（Shizuku 模式）没有权限执行的命令前缀。 */
     private static boolean needsRoot(String cmd) {
         return cmd.startsWith("KSU_") || cmd.startsWith("LSP_") || cmd.equals("AUTOPROF");
@@ -116,6 +129,8 @@ public final class RootMain {
                 o.put("ok", true);
                 return o;
             }
+            case "DRAIN": // 自上次充满以来的长时耗电统计（shell 身份也有 DUMP 权限）
+                return drain();
             case "REBOOT":
                 return act.reboot();
             case "REFRESH_INFO":
