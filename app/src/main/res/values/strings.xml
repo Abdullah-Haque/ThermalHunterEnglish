@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">热源猎手</string>
-    <string name="xposed_desc">检测发热/耗电元凶：统计应用唤醒锁与唤醒闹钟（作用域请勾选「系统框架」）</string>
+    <string name="app_name">ThermalHunter</string>
+    <string name="xposed_desc">Detect heat/drain culprits: track app wakelocks and wakeup alarms (check &quot;System Framework&quot; scope)</string>
 </resources>

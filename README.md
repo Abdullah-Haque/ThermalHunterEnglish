@@ -1,88 +1,88 @@
-# 热源猎手 ThermalHunter
+# ThermalHunter
 
-一个 Android 工具，用来找出让手机发热、耗电的元凶。推荐 root（KernelSU）+ LSPosed 模块；没有 root 时也可以通过 **Shizuku（无线调试 / ADB）** 以 shell 权限运行基础功能。首个适配机型为 **iQOO Z10 Turbo+（天玑，GKI 6.6 内核）**，其他联发科 / 高通机型理论上也能用。
+An Android tool designed to identify the culprits behind phone heating and battery drain. Recommended: root (KernelSU) + LSPosed module; without root, basic features can also run with shell permissions via **Shizuku (Wireless Debugging / ADB)**. Initial target device is **iQOO Z10 Turbo+ (Dimensity, GKI 6.6 kernel)**, though other MediaTek / Qualcomm devices should theoretically work as well.
 
-## 功能
+## Features
 
-| 模块 | 说明 |
+| Module | Description |
 |---|---|
-| 顶部概览 | SoC / 机身 / 电池温度；放电功耗（电流 × 电压）；各 CPU 簇频率与限频；GPU 负载与频率（联发科 GED / Mali devfreq / 高通 Adreno） |
-| 热源排行 | 按应用聚合进程；native 进程、内核线程按 CPU 排序（单核 %，15 秒平均），并按 CPU 占比估算功耗；标记后台高负载、缓存进程仍在跑、唤醒锁、频繁闹钟等异常 |
-| KSU 模块 | 扫描 `/data/adb/modules`，通过 exe、cmdline、工作目录、覆盖的系统文件和父进程链把进程归属到模块；识别**替换温控配置、修改调度/频率、常驻循环脚本、持有内核唤醒锁、Zygisk 注入**的模块 |
-| LSP 模块 | 读取 LSPosed 的 `modules_config.db`：每个模块的作用域、运行中的作用域应用数、作用域 CPU、是否注入系统框架、作用域内有哪些异常应用 |
-| 耗电统计 | 读取系统 batterystats（自上次充满电以来的累计数据）：已耗电、亮屏 / 熄屏每小时掉电、熄屏深睡占比；每个应用的估算 mAh、前台时长、后台持锁、唤醒闹钟、CPU 时间、定位；内核唤醒来源与唤醒锁；按规则标出**长期后台耗电**的异常应用。Shizuku 模式也可用 |
-| 后台耗电监测 | （root）约每小时用不唤醒设备的闹钟检查一次 batterystats，发现严重异常（后台长时间持锁、频繁唤醒、待机掉电过快等）时发通知，同一充电周期同一项只提醒一次；自动保存历史放电周期。可在设置中关闭 |
-| 唤醒耗电 | 在 system_server 中 hook `PowerManagerService` / `AlarmManagerService`，统计每个应用的 PARTIAL 唤醒锁持有时长和唤醒型闹钟次数；同时显示内核 `/sys/class/wakeup` 唤醒源 |
-| 一键清理 | 强行停止异常应用、杀死异常进程和模块进程；可在设置中开启"直接**禁用**异常的 KSU / LSP 模块" |
-| 单项操作 | 应用：强行停止 / 停用（冻结）/ 重新启用；进程：杀死；KSU 模块：禁用 / 启用（优先 `ksud module disable`，失败则写 `disable` 标记文件）；LSP 模块：禁用 / 启用 |
-| 悬浮窗 | 在任意界面上方实时显示温度、功耗和发热最高的 5 个进程 / 应用；可拖动，轻点展开 / 收起；通知栏常驻并可一键关闭，熄屏自动暂停采样 |
-| 模块自动归因 | （root）用系统自带的 simpleperf 每 30 秒低频采样一次注入了模块且在占用 CPU 的进程（system_server、被作用的应用），解析模块 APK 的 dex 类名，按调用栈算出每个 LSPosed 模块实际消耗的 CPU，并据此判定异常；只在界面或悬浮窗开启时运行，可在设置中关闭 |
-| VPN 隐身 | 对所选应用在其进程内让 VPN / 代理检测 API（NetworkCapabilities、NetworkInterface）报告「无 VPN」；需在 LSPosed 作用域里包含这些应用。补齐内核层 vpnhide 模块挡不住的框架 API 检测 |
-| 刷新率 | （root/shell）读取屏幕支持的刷新率，一键锁定全局 min/peak，高刷对所有应用统一生效，不再被系统按应用限频 |
+| Top Overview | SoC / Device / Battery temperature; discharge power (current × voltage); CPU cluster frequencies and throttling; GPU load and frequency (MediaTek GED / Mali devfreq / Qualcomm Adreno) |
+| Thermal Ranking | Aggregate processes by app; native processes and kernel threads sorted by CPU (single-core %, 15s average), with estimated power consumption based on CPU share; flags anomalies such as high background load, cached processes still running, wakelocks, frequent alarms, etc. |
+| KSU Modules | Scans `/data/adb/modules`, attributes processes to modules via exe, cmdline, working directory, overlaid system files, and parent process chains; identifies modules that **replace thermal configs, modify scheduler/frequency, run persistent looping scripts, hold kernel wakelocks, or inject via Zygisk** |
+| LSP Modules | Reads LSPosed's `modules_config.db`: module scope, number of running scoped apps, scope CPU, whether injected into system framework, and anomalous apps within scope |
+| Battery Drain Stats | Reads system batterystats (cumulative data since last full charge): battery drained, screen-on / screen-off drain rate per hour, screen-off deep sleep ratio; estimated mAh per app, foreground duration, background wakelocks, wakeup alarms, CPU time, location; kernel wakeup sources and wakelocks; flags anomalous apps with **long-term background drain** according to rules. Also available in Shizuku mode |
+| Background Drain Monitor | (root) Checks batterystats roughly hourly using a non-wake-up alarm; sends a notification upon detecting severe anomalies (prolonged background wakelocks, frequent wakeups, excessive standby drain, etc.), alerting at most once per issue per charge cycle; automatically saves historical discharge cycles. Can be disabled in Settings |
+| Wakelock Drain | Hooks `PowerManagerService` / `AlarmManagerService` in system_server, tracking each app's PARTIAL wakelock duration and wakeup alarm count; also displays kernel `/sys/class/wakeup` wakeup sources |
+| One-Click Clean | Force-stops anomalous apps, kills anomalous processes and module processes; option in Settings to directly **disable** anomalous KSU / LSP modules |
+| Individual Actions | Apps: Force stop / Disable (freeze) / Re-enable; Processes: Kill; KSU modules: Disable / Enable (prefers `ksud module disable`, falls back to writing `disable` flag file); LSP modules: Disable / Enable |
+| Floating Window | Real-time overlay showing temperature, power consumption, and top 5 heat/CPU-consuming processes / apps above any screen; draggable, tap to expand / collapse; persistent notification with one-tap close, automatically pauses sampling when screen is off |
+| Auto Module Attribution | (root) Low-frequency sampling every 30s using system simpleperf for CPU-consuming processes injected with modules (system_server, scoped apps), parses dex class names from module APKs, calculates actual CPU consumed by each LSPosed module based on call stacks to identify anomalies; only runs when UI or floating window is active, can be disabled in Settings |
+| VPN Stealth | Makes VPN / proxy detection APIs (NetworkCapabilities, NetworkInterface) report "no VPN" within selected app processes; requires target apps to be included in LSPosed scope. Complements kernel-level vpnhide modules that cannot block framework API detection |
+| Refresh Rate | (root/shell) Reads display-supported refresh rates, one-tap lock for global min/peak refresh rate; high refresh rate applies universally across all apps without being throttled per-app by the system |
 
-## 工作模式
+## Working Modes
 
-设置 → 工作模式：**自动**（默认，优先 root，没有则用 Shizuku）/ 仅 root / 仅 Shizuku。
+Settings → Working Mode: **Auto** (default, prefers root, falls back to Shizuku) / Root Only / Shizuku Only.
 
-| 功能 | root 模式 | Shizuku 模式（shell 权限） |
+| Feature | Root Mode | Shizuku Mode (shell permission) |
 |---|---|---|
-| 温度、功耗、CPU/GPU 频率、进程排行 | ✅ | ✅ |
-| 强行停止 / 停用（冻结）应用 | ✅ | ✅ |
-| 杀死 native 进程 / 其他应用进程 | ✅ | ❌ |
-| KSU 模块、LSP 模块扫描与禁用 | ✅ | ❌ |
-| 应用唤醒锁 / 闹钟统计（LSPosed hook） | ✅ | ❌ |
+| Temperature, power, CPU/GPU frequency, process ranking | ✅ | ✅ |
+| Force stop / Disable (freeze) apps | ✅ | ✅ |
+| Kill native processes / other app processes | ✅ | ❌ |
+| KSU module, LSP module scanning and disabling | ✅ | ❌ |
+| App wakelock / alarm stats (LSPosed hook) | ✅ | ❌ |
 
-Shizuku 模式用法：安装 [Shizuku](https://shizuku.rikka.app/)，在开发者选项中开启「无线调试」，在 Shizuku 中通过无线调试配对并启动服务；打开本应用后在弹窗中允许授权。手机重启后需要在 Shizuku 中重新启动服务。
+Shizuku mode usage: Install [Shizuku](https://shikuzu.rikka.app/), enable "Wireless Debugging" in Developer Options, pair and start service via Wireless Debugging in Shizuku; open this app and grant permission in the dialog. The service must be restarted in Shizuku after rebooting the phone.
 
-## 架构
+## Architecture
 
 ```
-App 界面 (MainActivity)  ──stdin/stdout 行协议──▶  常驻进程（su 或 Shizuku + app_process 运行本 APK 内的 RootMain）
-   │                                                 ├─ Scanner：/proc、温度、电池、cpufreq、GED、唤醒源
-   │                                                 ├─ KsuModules：模块扫描 + 进程归属
-   │                                                 ├─ LspModules：用 SQLite 读写 LSPosed 配置库
-   │                                                 └─ Actions：kill / am force-stop / pm disable / ksud（带保护名单）
+App UI (MainActivity)  ──stdin/stdout line protocol──▶  Daemon process (runs RootMain in this APK via su or Shizuku + app_process)
+   │                                                    ├─ Scanner: /proc, temperature, battery, cpufreq, GED, wakeup sources
+   │                                                    ├─ KsuModules: module scanning + process attribution
+   │                                                    ├─ LspModules: reads and writes LSPosed config DB using SQLite
+   │                                                    └─ Actions: kill / am force-stop / pm disable / ksud (with protection list)
    ▼
-LSPosed（作用域：系统框架）── HookEntry hook system_server ──▶ /data/system/thermalhunter/stats.json ──▶ 由 root 进程读取
+LSPosed (Scope: System Framework) ── HookEntry hook system_server ──▶ /data/system/thermalhunter/stats.json ──▶ Read by root process
 ```
 
-- 只有界面可见（或悬浮窗开启且亮屏）时才采样；没有订阅者 60 秒后后台进程自动退出。**本工具自身不会在后台持续耗电。**
-- 长时耗电统计直接读取系统自己记录的 batterystats，不需要本工具常驻；后台监测只是每小时（手机醒着时）读一次。
-- 保护名单（`core/Protect.java`）：system_server、zygote、surfaceflinger、lmkd、ksud、lspd、系统界面、vivo 桌面与电源管理组件、root / LSPosed 管理器等。这些对象不允许杀死或停用，防止死机、重启或掉 root。
+- Samples only when UI is visible (or floating window is active and screen is on); daemon process automatically exits after 60 seconds without subscribers. **This tool itself does not continuously drain battery in the background.**
+- Long-term battery drain stats directly read system batterystats recorded by the system itself, without requiring this tool to run persistently; background monitoring only reads once an hour (when the phone is awake).
+- Protection list (`core/Protect.java`): system_server, zygote, surfaceflinger, lmkd, ksud, lspd, System UI, vivo desktop and power management components, root / LSPosed managers, etc. These targets are forbidden from being killed or disabled to prevent crashes, reboots, or losing root.
 
-## 编译
+## Build
 
-需要 JDK 17 和 Android SDK（platform 35、build-tools 35）。
+Requires JDK 17 and Android SDK (platform 35, build-tools 35).
 
 ```bash
-echo "sdk.dir=/你的/android-sdk" > local.properties
-./gradlew :app:assembleRelease        # 或直接用 Android Studio 打开
-# 产物：app/build/outputs/apk/release/app-release.apk
+echo "sdk.dir=/your/android-sdk" > local.properties
+./gradlew :app:assembleRelease        # Or open directly in Android Studio
+# Output: app/build/outputs/apk/release/app-release.apk
 ```
 
-## 使用
+## Usage
 
-1. 安装 APK，在 KernelSU 管理器中**给「热源猎手」授予超级用户权限**。
-2. 在 LSPosed 管理器中启用本模块，作用域勾选**系统框架**和**热源猎手**，然后**重启手机**。
-3. 打开 App，红色项为异常，点击可查看详情并操作。
+1. Install APK, **grant Superuser permissions to "ThermalHunter"** in KernelSU Manager.
+2. Enable this module in LSPosed Manager, check **System Framework** and **ThermalHunter** in scope, then **reboot the phone**.
+3. Open the App; items in red indicate anomalies. Tap to view details and perform actions.
 
-## 判定规则（`core/Analyzer.java`）
+## Detection Rules (`core/Analyzer.java`)
 
-- 任意应用持续 CPU ≥35%；后台（adj≥200）≥10%；缓存进程（adj≥900）≥3%
-- KSU 模块进程合计 ≥5%；其他 native 进程 ≥20%；内核线程 ≥30% 只提示（无法杀死）
-- 后台应用持有唤醒锁 ≥50% 的时间，或唤醒闹钟 ≥6 次/分钟
-- LSP 模块：自身后台进程 ≥8% 判为异常；作用域内有异常应用，或注入系统框架且 system_server CPU 偏高时，标记为**可疑**
+- Any app with continuous CPU ≥35%; background (adj≥200) ≥10%; cached process (adj≥900) ≥3%
+- KSU module processes totaling ≥5%; other native processes ≥20%; kernel threads ≥30% (warning only, cannot be killed)
+- Background app holding wakelock ≥50% of the time, or wakeup alarms ≥6 times/minute
+- LSP module: flagged as anomalous if its own background process is ≥8%; marked as **suspicious** if anomalous apps exist in its scope, or if injected into system framework and system_server CPU is elevated
 
-## 注意事项
+## Notes
 
-- **禁用 LSPosed 模块需要重启才能完全生效**：lspd 把配置缓存在内存中，本工具是直接修改数据库。
-- 禁用 KSU 模块会立即杀死其进程，但它挂载的文件和 `system.prop` 修改要重启后才会撤销。
-- 单个应用的功耗是**按 CPU 占比分摊**的估算值；充电时不显示功耗估算。
-- iQOO Z10 Turbo+ 的温度传感器名称尚未在真机上确认。App 把名称含 `soc/cpu/mtktscpu/gpu/apu` 的当作 SoC 温度，含 `shell/skin/board/ap_ntc` 的当作机身温度。如果读数不对，把 `cat /sys/class/thermal/thermal_zone*/type` 的输出发给我，用来调整 `Analyzer.isSocZone`。
+- **Disabling an LSPosed module requires a reboot to take full effect**: lspd caches configs in memory, and this tool modifies the database directly.
+- Disabling a KSU module immediately kills its processes, but its mounted files and `system.prop` modifications will only revert after a reboot.
+- Power consumption of individual apps is an estimated value **allocated based on CPU share**; power estimation is not displayed during charging.
+- Temperature sensor names for iQOO Z10 Turbo+ have not yet been confirmed on actual hardware. The App treats sensors with names containing `soc/cpu/mtktscpu/gpu/apu` as SoC temperature, and those containing `shell/skin/board/ap_ntc` as device temperature. If readings are inaccurate, send the output of `cat /sys/class/thermal/thermal_zone*/type` to adjust `Analyzer.isSocZone`.
 
-### 签名
+### Signing
 
-release 包使用固定签名。本地编译时在项目根目录放一个 `keystore.properties`（已被 git 忽略）：
+The release package uses a fixed signature. When building locally, place a `keystore.properties` in the project root (ignored by git):
 
 ```properties
 storeFile=/path/to/release.jks
@@ -91,4 +91,4 @@ keyAlias=thermalhunter
 keyPassword=...
 ```
 
-没有这个文件时回退为 debug 签名。GitHub Actions 从仓库 Secrets 读取：`KEYSTORE_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`。
+Falls back to debug signature if this file is absent. GitHub Actions reads from repository Secrets: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`.

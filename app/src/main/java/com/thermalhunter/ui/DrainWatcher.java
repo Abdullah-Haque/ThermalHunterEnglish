@@ -33,15 +33,15 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 后台耗电异常监测。
+ * Background battery drain anomaly monitoring.
  *
- * 用不唤醒设备的不精确闹钟（ELAPSED_REALTIME + setInexactRepeating）大约每小时检查一次：
- * 只在手机本来就醒着时才触发，不会为了检查而额外唤醒手机。每次检查通过 su 读取一次
- * batterystats（系统自己持续统计的数据，本工具无需常驻采样），发现严重异常时发通知；
- * 同一个充电周期内同一项异常只提醒一次。
+ * Checks approximately once per hour using non-wakeful inexact alarm (ELAPSED_REALTIME + setInexactRepeating):
+ * Triggers only when the phone is already awake, never waking the phone just to check. Each check reads
+ * batterystats once via su (system's own continuous stats, no persistent sampling required by this tool),
+ * and notifies when severe anomalies are detected; each anomaly is alerted only once per charging cycle.
  *
- * 同时负责记录历史：发现 batterystats 已重置（充满后拔下电源开始新周期）时，
- * 把上一次保存的报告归档为一个「放电周期」。
+ * Also responsible for history recording: when batterystats is reset (unplugged after full charge starting a new cycle),
+ * archives the previously saved report as a "discharge cycle".
  */
 public final class DrainWatcher extends BroadcastReceiver {
 
@@ -52,7 +52,7 @@ public final class DrainWatcher extends BroadcastReceiver {
     private static final int MAX_HISTORY = 20;
     private static final long HOUR = 3_600_000L;
 
-    // ------------------------------------------------------------------ 调度
+    // ------------------------------------------------------------------ Scheduling
 
     static SharedPreferences prefs(Context c) {
         return c.getSharedPreferences("settings", Context.MODE_PRIVATE);
@@ -67,7 +67,7 @@ public final class DrainWatcher extends BroadcastReceiver {
         schedule(c);
     }
 
-    /** 按开关注册 / 取消每小时检查。重复调用安全（同一个 PendingIntent 会被替换）。 */
+    /** Register/unregister hourly check based on switch. Safe to call repeatedly (same PendingIntent replaced). */
     static void schedule(Context c) {
         AlarmManager am = c.getSystemService(AlarmManager.class);
         if (am == null) return;
@@ -108,7 +108,7 @@ public final class DrainWatcher extends BroadcastReceiver {
         if (!isCharging(c)) notifyIssues(c, rep);
     }
 
-    /** 后台没有常驻会话，直接用一次性 su 读取；带超时，避免卡住广播。 */
+    /** No persistent session in background; read directly with one-off su; with timeout to avoid hanging broadcast. */
     private static JSONObject readViaSu() throws Exception {
         Process p = new ProcessBuilder("su", "-c", "dumpsys batterystats -c").redirectErrorStream(true).start();
         p.getOutputStream().close();
@@ -136,7 +136,7 @@ public final class DrainWatcher extends BroadcastReceiver {
         return st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL;
     }
 
-    // ------------------------------------------------------------------ 提醒
+    // ------------------------------------------------------------------ Alerts
 
     private static void notifyIssues(Context c, JSONObject rep) {
         long cycle = rep.optLong("startClock");
@@ -156,14 +156,14 @@ public final class DrainWatcher extends BroadcastReceiver {
             if (o.optInt("level") != DrainStats.BAD) continue;
             if (!done.add("uid:" + o.optInt("uid"))) continue;
             JSONArray r = o.optJSONArray("reasons");
-            lines.add(label(c, o) + "：" + (r != null && r.length() > 0 ? r.optString(0) : "后台耗电异常"));
+            lines.add(label(c, o) + ": " + (r != null && r.length() > 0 ? r.optString(0) : "Background battery drain anomaly"));
         }
         p.edit().putLong("drain_notified_cycle", cycle).putStringSet("drain_notified", done).apply();
         if (lines.isEmpty()) return;
 
         NotificationManager nm = c.getSystemService(NotificationManager.class);
         if (nm == null) return;
-        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "耗电异常提醒", NotificationManager.IMPORTANCE_DEFAULT));
+        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Battery Drain Alert", NotificationManager.IMPORTANCE_DEFAULT));
         PendingIntent open = PendingIntent.getActivity(c, 2,
                 new Intent(c, MainActivity.class).putExtra(MainActivity.EXTRA_PAGE, MainActivity.PAGE_DRAIN)
                         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -171,7 +171,7 @@ public final class DrainWatcher extends BroadcastReceiver {
         String text = String.join("\n", lines);
         Notification n = new Notification.Builder(c, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat)
-                .setContentTitle(lines.size() == 1 ? "发现耗电异常" : "发现 " + lines.size() + " 项耗电异常")
+                .setContentTitle(lines.size() == 1 ? "Battery drain anomaly detected" : lines.size() + " battery drain anomalies detected")
                 .setContentText(lines.get(0))
                 .setStyle(new Notification.BigTextStyle().bigText(text))
                 .setContentIntent(open)
@@ -179,15 +179,15 @@ public final class DrainWatcher extends BroadcastReceiver {
                 .build();
         try {
             nm.notify(NOTIFY_ID, n);
-        } catch (SecurityException ignored) { // 未授予通知权限
+        } catch (SecurityException ignored) { // Notification permission not granted
         }
     }
 
-    // ------------------------------------------------------------------ 历史
+    // ------------------------------------------------------------------ History
 
     /**
-     * 保存最新报告；若 batterystats 已开始新周期，把上一份报告归档进历史。
-     * 界面每次读取报告后也会调用。线程安全（文件读写串行）。
+     * Save latest report; if batterystats has started a new cycle, archive previous report to history.
+     * Also called each time UI reads report. Thread-safe (file I/O serialized).
      */
     static synchronized void record(Context c, JSONObject rep) {
         try {
@@ -211,7 +211,7 @@ public final class DrainWatcher extends BroadcastReceiver {
         }
     }
 
-    /** 统计被重置：放电时长倒退，或周期起点明显不同。 */
+    /** Stats reset: discharge duration went backwards, or cycle start differs significantly. */
     private static boolean isNewCycle(JSONObject last, JSONObject rep) {
         return rep.optLong("onBatteryMs") < last.optLong("onBatteryMs") - 60_000L
                 || Math.abs(rep.optLong("startClock") - last.optLong("startClock")) > 30 * 60_000L;
@@ -226,7 +226,7 @@ public final class DrainWatcher extends BroadcastReceiver {
         return new JSONArray();
     }
 
-    /** 最近一次保存的完整报告（界面在连接建立前先展示它）。 */
+    /** Most recently saved full report (UI displays it before connection is established). */
     static JSONObject lastReport(Context c) {
         return readJson(new File(c.getFilesDir(), "drain_last.json"));
     }
@@ -254,31 +254,31 @@ public final class DrainWatcher extends BroadcastReceiver {
         return s;
     }
 
-    // ------------------------------------------------------------------ 名称
+    // ------------------------------------------------------------------ Names
 
-    /** uid → 可读名称：普通应用用应用名（共享 uid 加「等」），系统 uid 用固定名称。 */
+    /** uid → readable name: normal apps use app name (shared uid adds " etc."), system uid uses fixed name. */
     static String label(Context c, JSONObject app) {
         int uid = app.optInt("uid");
         int appId = uid % 100000;
         if (appId < 10000) {
             switch (appId) {
-                case 0: return "内核与 root 进程";
-                case 1000: return "Android 系统";
-                case 1001: return "电话服务";
-                case 1002: return "蓝牙";
-                case 1010: return "WLAN";
-                case 1013: return "媒体服务";
-                case 1021: return "GPS 服务";
+                case 0: return "Kernel & Root Processes";
+                case 1000: return "Android System";
+                case 1001: return "Phone Services";
+                case 1002: return "Bluetooth";
+                case 1010: return "Wi-Fi";
+                case 1013: return "Media Services";
+                case 1021: return "Location Services";
                 case 1027: return "NFC";
-                case 1041: return "音频服务";
-                case 1047: return "相机服务";
-                case 1066: return "统计服务";
+                case 1041: return "Audio Services";
+                case 1047: return "Camera Services";
+                case 1066: return "Stats Services";
                 case 2000: return "Shell";
-                default: return "系统进程（uid " + appId + "）";
+                default: return "System Process (uid " + appId + ")";
             }
         }
         JSONArray pk = app.optJSONArray("pkgs");
-        if (pk == null || pk.length() == 0) return "已卸载的应用（uid " + uid + "）";
+        if (pk == null || pk.length() == 0) return "Uninstalled app (uid " + uid + ")";
         String first = pk.optString(0);
         String name = first;
         try {
@@ -287,10 +287,10 @@ public final class DrainWatcher extends BroadcastReceiver {
             name = pm.getApplicationLabel(ai).toString();
         } catch (Throwable ignored) {
         }
-        return pk.length() > 1 ? name + " 等" : name;
+        return pk.length() > 1 ? name + " etc." : name;
     }
 
-    // ------------------------------------------------------------------ 文件
+    // ------------------------------------------------------------------ Files
 
     private static JSONObject readJson(File f) {
         try {

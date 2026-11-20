@@ -6,30 +6,30 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 加固应用兼容修复（app 侧；与 VPN 隐身一致，经一次性 su 通道执行 root 操作）。
+ * Hardened app compatibility fix (app side; consistent with VPN hide, executes root operations via one-off su channel).
  *
- * 背景：部分加固应用（SecNeo/梆梆系，如数字人民币 dcep）在 root 设备上启动即闪退。
- * 反汇编与运行时实验证实其加固自检读取 /sys/fs/selinux/enforce 的内容——
- * 读到 1（Enforcing）且检出 root 信号时触发防篡改自杀（故意跳转到非法地址）；
- * 读到 0（Permissive）则当作测试环境放行。
+ * Background: Some hardened apps (SecNeo/Bangcle family, e.g. digital RMB dcep) crash immediately upon launch on rooted devices.
+ * Disassembly and runtime experiments confirm that hardened self-checks read the content of /sys/fs/selinux/enforce—
+ * Reading 1 (Enforcing) and detecting root signals triggers anti-tamper suicide (deliberate jump to an illegal address);
+ * Reading 0 (Permissive) treats it as a test environment and allows execution.
  *
- * 修复：把内容为 0 的影子文件 bind-mount 盖住 /sys/fs/selinux/enforce，
- * 让加固读到 0 而不自杀。真实 SELinux 状态与访问控制完全不变（getenforce 等
- * 工具只是被影子文件误导显示 Permissive）。即时生效、无需重启；
- * 重启 / 软重启后挂载丢失需重新启用；umount 一步即可完整还原。
+ * Fix: Bind-mount a shadow file containing '0' over /sys/fs/selinux/enforce,
+ * allowing hardened apps to read 0 without crashing. Actual SELinux status and access control remain completely unchanged
+ * (tools like getenforce are merely misled by the shadow file into displaying Permissive). Takes effect immediately,
+ * no reboot required; mount is lost after reboot/soft reboot and needs re-enabling; umount cleanly restores in one step.
  *
- * 必须用 su -M（mount-master，全局挂载命名空间）执行：普通 app 进程各自持有
- * 独立挂载命名空间，默认 su 只会挂进本应用的命名空间，其他应用不可见。
+ * Must be executed with su -M (mount-master, global mount namespace): regular app processes each hold
+ * an independent mount namespace; default su only mounts into the current app's namespace, invisible to other apps.
  */
 final class CompatFix {
 
     static final String SRC = "/data/local/tmp/thermalhunter_compat_enforce";
     static final String TARGET = "/sys/fs/selinux/enforce";
 
-    /** 一次读回：第 1 行 enforce 文件内容（真实文件无换行符，必须用 echo 包裹补齐），第 2 行影子文件是否存在（1/0）。 */
+    /** Read back in one go: line 1 enforce file content (real file lacks newline, must be wrapped in echo), line 2 whether shadow file exists (1/0). */
     private static final String QUERY = "echo \"$(cat " + TARGET + " 2>/dev/null)\"; [ -f " + SRC + " ] && echo 1 || echo 0";
 
-    /** 状态：active = 修复生效中（影子存在且内容为 0）；value = enforce 文件当前内容。 */
+    /** Status: active = fix active (shadow exists and content is 0); value = enforce file current content. */
     static final class Status {
         final boolean active;
         final String value;
@@ -40,23 +40,23 @@ final class CompatFix {
     }
 
     interface Reply {
-        /** ok=false 时 msg 为错误说明（如需要 root）；st 可能为 null。 */
+        /** When ok=false, msg contains error explanation (e.g. root required); st may be null. */
         void onResult(boolean ok, String msg, Status st);
     }
 
-    /** 查询修复状态。 */
+    /** Query fix status. */
     static void query(Reply cb) {
         runAsync(() -> {
             try {
                 Status st = readStatus();
-                deliver(cb, true, st.active ? "已启用" : "未启用", st);
+                deliver(cb, true, st.active ? "Enabled" : "Disabled", st);
             } catch (Throwable e) {
-                deliver(cb, false, "需要 root（KSU）权限", null);
+                deliver(cb, false, "Root (KSU) permission required", null);
             }
         });
     }
 
-    /** enable=true 挂载影子；false umount 还原（影子文件保留作下次挂载源）。完成后带回最新状态。 */
+    /** enable=true mounts shadow; false umounts to restore (shadow file preserved as next mount source). Delivers latest status upon completion. */
     static void set(boolean enable, Reply cb) {
         runAsync(() -> {
             try {
@@ -65,33 +65,33 @@ final class CompatFix {
                             + " && mount --bind " + SRC + " " + TARGET);
                     Status st = readStatus();
                     if (st.active) {
-                        deliver(cb, true, "已启用：加固应用将读到 enforce=0（真实 SELinux 状态不变）", st);
+                        deliver(cb, true, "Enabled: Hardened apps will read enforce=0 (actual SELinux state unchanged)", st);
                     } else {
-                        deliver(cb, false, "挂载未生效（读回 enforce=" + st.value + "，可能被内核钩子拦截）", st);
+                        deliver(cb, false, "Mount ineffective (read back enforce=" + st.value + ", may be intercepted by kernel hook)", st);
                     }
                 } else {
-                    // 双重 umount 兜底叠加挂载；保留影子文件（16 字节，重启用作下次挂载源）
+                    // Double umount as fallback for stacked mounts; preserve shadow file (16 bytes, used as mount source on next run)
                     su("umount " + TARGET + " 2>/dev/null; umount " + TARGET + " 2>/dev/null");
                     Status st = readStatus();
                     if (!st.active) {
-                        deliver(cb, true, "已还原：enforce 文件恢复真实状态", st);
+                        deliver(cb, true, "Restored: enforce file returned to actual state", st);
                     } else {
-                        deliver(cb, false, "umount 未生效，请重试", st);
+                        deliver(cb, false, "umount ineffective, please try again", st);
                     }
                 }
             } catch (Throwable e) {
-                deliver(cb, false, "操作失败: " + e.getMessage(), null);
+                deliver(cb, false, "Operation failed: " + e.getMessage(), null);
             }
         });
     }
 
-    /** 菜单卡片描述文案。 */
+    /** Menu card description text. */
     static String desc(Status st) {
-        if (st == null) return "正在检测状态…";
-        return st.active ? "已启用 · 影子生效中（点击管理）" : "未启用 · 点击开启";
+        if (st == null) return "Checking status…";
+        return st.active ? "Enabled · Shadow active (tap to manage)" : "Disabled · Tap to enable";
     }
 
-    /** 生效判定：影子文件存在且 enforce 读回 0。 */
+    /** Active check: shadow file exists and enforce reads back 0. */
     private static Status readStatus() throws Exception {
         String[] p = su(QUERY).trim().split("\n");
         String value = p.length > 0 ? p[0].trim() : "";
@@ -107,7 +107,7 @@ final class CompatFix {
         new Thread(r, "compat-fix").start();
     }
 
-    /** 与 syncVpnHideConfig 相同的一次性 su 通道，但必须 -M 进全局挂载命名空间；合并 stderr 避免管道堵塞。 */
+    /** Same one-off su channel as syncVpnHideConfig, but must use -M into global mount namespace; merge stderr to avoid pipe blockage. */
     private static String su(String cmd) throws Exception {
         Process pr = new ProcessBuilder("su", "-M", "-c", cmd)
                 .redirectErrorStream(true).start();
@@ -119,7 +119,7 @@ final class CompatFix {
         }
         if (!pr.waitFor(10, TimeUnit.SECONDS)) {
             pr.destroyForcibly();
-            throw new IllegalStateException("su 超时");
+            throw new IllegalStateException("su timed out");
         }
         return sb.toString();
     }

@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, full-english ]
     tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
@@ -30,15 +30,10 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
-            CLEAN=$(printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]')
-            echo "KEYSTORE_BASE64 length after removing whitespace: ${#CLEAN} (expected 5684)"
-            printf '%s' "$CLEAN" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "Decoded keystore size: $(stat -c %s "$RUNNER_TEMP/release.jks") bytes (expected 4262)"
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/release.jks"
             echo "SIGNING_STORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          elif [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "::error::KEYSTORE_BASE64 secret is missing"; exit 1
           else
-            echo "::warning::No keystore available (PR from fork?), building with debug signing"
+            echo "::warning::No keystore secret, building with debug signing"
           fi
 
       - name: Build release APK

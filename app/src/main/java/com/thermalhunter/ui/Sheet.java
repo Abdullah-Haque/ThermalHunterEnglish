@@ -15,7 +15,7 @@ import android.widget.TextView;
 
 import com.thermalhunter.R;
 
-/** 统一风格的底部弹出面板，替代系统 AlertDialog。 */
+/** Unified bottom sheet dialog replacing system AlertDialog. */
 final class Sheet {
     static final int NORMAL = 0, PRIMARY = 1, DANGER = 2, DANGER_FILLED = 3;
 
@@ -46,7 +46,7 @@ final class Sheet {
         sv.setVerticalScrollBarEnabled(false);
         body = u.col();
         sv.addView(body, new ViewGroup.LayoutParams(-1, -2));
-        // 内容过长时滚动区收缩，按钮始终可见
+        // When content is too long, scroll area shrinks, buttons stay visible
         panel.addView(sv, new LinearLayout.LayoutParams(-1, -2, 1f));
         actions = u.col();
         panel.addView(actions, Ui.lp(-1, -2, 0, u.dp(16), 0, 0));
@@ -127,7 +127,7 @@ final class Sheet {
         return this;
     }
 
-    /** 固定在滚动区上方、不随列表滚动的视图（如搜索框）。 */
+    /** View pinned above the scroll area that doesn't scroll with the list (e.g., search box). */
     Sheet pin(View v) {
         panel.addView(v, panel.indexOfChild(sv), Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
         return this;

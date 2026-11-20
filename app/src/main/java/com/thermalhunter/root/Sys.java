@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-/** root 进程内的文件/命令工具。全部容错：读不到返回 null / 默认值。 */
+/** File/command utilities in root process. Fully fault-tolerant: returns null / default value when unreadable. */
 final class Sys {
     private Sys() {}
 
@@ -32,7 +32,7 @@ final class Sys {
         return s == null ? null : s.trim();
     }
 
-    /** 读取较大的文件（如 packages.list）。 */
+    /** Reads larger files (e.g. packages.list). */
     static String readAll(String path, int max) {
         try (InputStream in = new FileInputStream(path)) {
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -55,7 +55,7 @@ final class Sys {
         }
     }
 
-    /** 取文本里出现的第一个整数。 */
+    /** Extracts first integer appearing in text. */
     static long firstNumber(String s, long def) {
         if (s == null) return def;
         int i = 0, n = s.length();
@@ -86,12 +86,12 @@ final class Sys {
         return new File(path).exists();
     }
 
-    /** 直接 exec（不经过 shell，杜绝注入）。返回 [exitCode, output]。 */
+    /** Direct exec (bypasses shell, preventing injection). Returns [exitCode, output]. */
     static Object[] exec(String... argv) {
         return execMax(65536, argv);
     }
 
-    /** 同 exec，但允许更长的输出（如 pm list packages）。 */
+    /** Like exec, but allows larger output (e.g. pm list packages). */
     static Object[] execMax(int max, String... argv) {
         try {
             Process p = new ProcessBuilder(argv).redirectErrorStream(true).start();
@@ -108,7 +108,7 @@ final class Sys {
         }
     }
 
-    /** exec 并把标准输出写入文件（输出很大时使用），标准错误另行收集。返回 [exitCode, stderr]。 */
+    /** exec and writes stdout to file (used when output is large); collects stderr separately. Returns [exitCode, stderr]. */
     static Object[] execToFile(File out, String... argv) {
         try {
             Process p = new ProcessBuilder(argv).redirectOutput(out).start();

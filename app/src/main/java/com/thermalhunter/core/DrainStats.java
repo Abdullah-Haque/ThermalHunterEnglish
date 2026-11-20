@@ -13,17 +13,18 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 长时耗电统计：解析系统自带的 batterystats（自上次充满以来的累计数据）并判定异常。
+ * Long-term battery drain stats: parses system batterystats (cumulative data since last full charge) and identifies anomalies.
  *
- * 短时间的功率读数只能反映当下，看不出「一直在后台偷偷耗电」的应用；系统本身持续记录了
- * 每个 uid 的耗电（mAh）、唤醒锁、唤醒闹钟、定位、CPU 时间以及熄屏掉电和深睡情况，
- * 读取它不需要本工具在后台常驻采样，也就不会额外耗电。
+ * Short-term power readings only reflect the immediate moment and cannot detect apps that "constantly drain battery in the background";
+ * the system continuously records each uid's power consumption (mAh), wakelocks, wakeup alarms, location, CPU time,
+ * as well as screen-off drain and deep sleep status. Reading it does not require this tool to run sampling daemons in the background,
+ * thereby consuming no additional power.
  *
- * 数据来源：{@code dumpsys batterystats -c}（checkin 格式，逗号分隔，字段顺序稳定）。
- * 注意不能用 {@code --checkin}：它会读走并删除系统为 Google 签入保存的上一周期文件，
- * 而且此时输出的是旧周期数据。
+ * Data source: {@code dumpsys batterystats -c} (checkin format, comma-separated, stable field order).
+ * Note that {@code --checkin} must NOT be used: it reads and deletes the previous cycle file saved by the system for Google checkin,
+ * returning old cycle data at that point.
  *
- * root 端（RootMain 的 DRAIN 命令）和 App 端（后台定时检查）共用本类。
+ * Shared between root side (RootMain DRAIN command) and App side (background periodic checks).
  */
 public final class DrainStats {
 
@@ -31,16 +32,16 @@ public final class DrainStats {
 
     private static final long MIN = 60_000L, HOUR = 3_600_000L;
 
-    /** batterystats 中各耗电组件的 checkin 标签 → 中文名。 */
+    /** batterystats checkin tag -> display name for battery components. */
     private static final Map<String, String> COMPONENTS = new HashMap<>();
 
     static {
         String[] kv = {
-                "scrn", "屏幕", "cpu", "CPU", "blue", "蓝牙", "camera", "相机", "cam", "相机",
-                "audio", "音频", "video", "视频", "flashlight", "手电筒", "flash", "手电筒",
-                "cell", "移动网络", "radio", "移动网络", "sensors", "传感器", "gnss", "定位",
-                "gps", "定位", "wifi", "WLAN", "memory", "内存", "phone", "通话", "ambi", "息屏显示",
-                "idle", "待机", "wakelock", "唤醒锁", "user", "其他用户", "unacc", "未统计", "over", "高估",
+                "scrn", "Screen", "cpu", "CPU", "blue", "Bluetooth", "camera", "Camera", "cam", "Camera",
+                "audio", "Audio", "video", "Video", "flashlight", "Flashlight", "flash", "Flashlight",
+                "cell", "Mobile Network", "radio", "Mobile Network", "sensors", "Sensors", "gnss", "Location",
+                "gps", "Location", "wifi", "Wi-Fi", "memory", "Memory", "phone", "Phone Calls", "ambi", "Ambient Display",
+                "idle", "Standby", "wakelock", "Wakelock", "user", "Other Users", "unacc", "Unaccounted", "over", "Over-counted",
         };
         for (int i = 0; i < kv.length; i += 2) COMPONENTS.put(kv[i], kv[i + 1]);
     }
@@ -60,9 +61,9 @@ public final class DrainStats {
     private DrainStats() {
     }
 
-    // ------------------------------------------------------------------ 解析
+    // ------------------------------------------------------------------ Parsing
 
-    /** 流式解析 {@code dumpsys batterystats -c} 的输出，跳过体积很大的历史记录行。 */
+    /** Stream-parses output of {@code dumpsys batterystats -c}, skipping large history lines. */
     public static JSONObject parse(BufferedReader in) throws IOException, JSONException {
         Map<Integer, Uid> uids = new HashMap<>();
         Map<Integer, List<String>> pkgs = new HashMap<>();
@@ -75,7 +76,7 @@ public final class DrainStats {
 
         String line;
         while ((line = in.readLine()) != null) {
-            // 历史行 "9,h,..."，以及其他非数据行
+            // History lines "9,h,...", and other non-data lines
             if (line.length() < 8 || line.startsWith("9,h,") || !line.startsWith("9,")) continue;
             String[] a = line.split(",", -1);
             if (a.length < 5) continue;
@@ -149,7 +150,7 @@ public final class DrainStats {
                     }
                     break;
                 case "st":
-                    // 进程状态时长：前台(top)、前台服务、前台、后台、顶层休眠、重量级、缓存
+                    // Process state durations: top, foreground service, foreground, background, top sleeping, heavy weight, cached
                     if (a.length >= 11) {
                         Uid u = uid(uids, uid);
                         u.topMs += toLong(a[4]);
@@ -160,7 +161,7 @@ public final class DrainStats {
                     }
                     break;
                 case "sr":
-                    // 传感器：句柄 -10000 为 GPS；第 6 个字段为累计时长
+                    // Sensor: handle -10000 is GPS; 6th field is cumulative duration
                     if (a.length >= 6 && a[4].equals("-10000")) uid(uids, uid).gpsMs += toLong(a[5]);
                     break;
                 case "kwl":
@@ -177,7 +178,7 @@ public final class DrainStats {
         JSONObject o = new JSONObject();
         if (!any || bt == null) {
             o.put("ok", false);
-            o.put("error", "读取不到 batterystats 数据");
+            o.put("error", "Cannot read batterystats data");
             return o;
         }
         o.put("ok", true);
@@ -201,7 +202,7 @@ public final class DrainStats {
             o.put("screenOffMah", dc[5]);
         }
 
-        // 各组件耗电
+        // Component drain
         List<Map.Entry<String, Double>> comps = new ArrayList<>(components.entrySet());
         comps.sort((x, y) -> Double.compare(y.getValue(), x.getValue()));
         JSONArray ca = new JSONArray();
@@ -212,7 +213,7 @@ public final class DrainStats {
         }
         o.put("components", ca);
 
-        // 各 uid
+        // Per-uid
         double uidTotal = 0;
         for (Uid u : uids.values()) uidTotal += Math.max(0, u.mah);
         o.put("uidMah", round1(uidTotal));
@@ -254,11 +255,12 @@ public final class DrainStats {
         return o;
     }
 
-    // ------------------------------------------------------------------ 判定
+    // ------------------------------------------------------------------ Evaluation
 
     /**
-     * 在报告上标注异常：整体（待机掉电速度、熄屏深睡）写入 issues，每个应用写入 level / reasons。
-     * @param selfPkg 本应用包名（不判定自己）；可为 null
+     * Annotates anomalies on report: overall (standby drain rate, screen-off deep sleep) written to issues,
+     * per-app written to level / reasons.
+     * @param selfPkg Package name of this app (self is not evaluated); can be null
      */
     public static void analyze(JSONObject o, String selfPkg) throws JSONException {
         long onBattery = o.optLong("onBatteryMs");
@@ -267,7 +269,7 @@ public final class DrainStats {
         double cap = o.optDouble("capacity", 0);
         JSONArray issues = new JSONArray();
 
-        // 待机（熄屏）掉电速度：优先按 mAh / 容量算，比整数百分比精确
+        // Standby (screen-off) drain rate: calculated via mAh / capacity preferentially, more accurate than integer percentages
         double offRate = rate(o.optDouble("screenOffMah", 0), o.optLong("screenOffPct", 0), cap, screenOff);
         double onRate = rate(o.optDouble("dischargeMah", 0) - o.optDouble("screenOffMah", 0),
                 o.optLong("screenOnPct", 0), cap, screenOn);
@@ -279,19 +281,19 @@ public final class DrainStats {
         if (screenOff >= HOUR && offRate >= 0) {
             if (offRate >= 3) {
                 issues.put(issue(BAD, "standby", String.format(Locale.US,
-                        "熄屏待机掉电 %.1f%%/小时，明显偏快（正常一般低于 1%%/小时）", offRate)));
+                        "Screen-off standby drain is %.1f%%/hr, significantly fast (normally under 1%%/hr)", offRate)));
             } else if (offRate >= 1.5) {
                 issues.put(issue(WARN, "standby", String.format(Locale.US,
-                        "熄屏待机掉电 %.1f%%/小时，偏快（正常一般低于 1%%/小时）", offRate)));
+                        "Screen-off standby drain is %.1f%%/hr, fast (normally under 1%%/hr)", offRate)));
             }
         }
         if (screenOff >= HOUR && awake >= 0) {
             int pct = (int) Math.round(awake * 100);
             if (awake >= 0.4) {
-                issues.put(issue(BAD, "awake", "熄屏后有 " + pct + "% 的时间 CPU 未能进入深睡，"
-                        + "通常是应用持有唤醒锁或频繁唤醒"));
+                issues.put(issue(BAD, "awake", "CPU was unable to enter deep sleep for " + pct + "% of the time after screen-off, "
+                        + "usually caused by app wakelocks or frequent wakeups"));
             } else if (awake >= 0.15) {
-                issues.put(issue(WARN, "awake", "熄屏后有 " + pct + "% 的时间 CPU 处于唤醒状态（理想值低于 10%）"));
+                issues.put(issue(WARN, "awake", "CPU was awake for " + pct + "% of the time after screen-off (ideally under 10%)"));
             }
         }
 
@@ -306,7 +308,7 @@ public final class DrainStats {
                 int uid = a.optInt("uid");
                 JSONArray pk = a.optJSONArray("pkgs");
                 boolean self = selfPkg != null && pk != null && pk.toString().contains("\"" + selfPkg + "\"");
-                // 只判定普通应用；系统 uid（<10000）展示但不标异常，避免误伤
+                // Only evaluate regular apps; system uids (<10000) are displayed but not flagged as anomalous to avoid false positives
                 if (uid % 100000 >= 10000 && !self && onBattery >= 30 * MIN) {
                     judgeApp(a, onBattery, hours, uidTotal, reasons, warns);
                 }
@@ -333,49 +335,49 @@ public final class DrainStats {
         long fgs = a.optLong("fgsMs");
         double mah = a.optDouble("mah", 0);
         double share = mah / uidTotal;
-        // 前台服务（音乐、导航、录音等）在后台运行是用户预期的：相关项最多标为「可疑」
-        String fgsNote = fgs >= 30 * MIN ? "（有前台服务 " + dur(fgs) + "，如在听歌 / 导航属正常）" : "";
+        // Foreground services (music, navigation, recording, etc.) running in background are expected: max severity is WARN
+        String fgsNote = fgs >= 30 * MIN ? " (Foreground service active for " + dur(fgs) + "; normal if playing music / navigating)" : "";
 
-        // 后台唤醒锁：优先用系统统计的后台持锁时长；没有该字段时，前台很少却持锁很久也算
+        // Background wakelock: prefer system-tracked background wakelock duration; if absent, minimal foreground time with long lock duration also counts
         long bgWl = a.optLong("bgWlMs");
         if (bgWl <= 0 && a.optLong("wlMs") > top * 2) bgWl = a.optLong("wlMs") - top;
         double wlFrac = bgWl / (double) onBattery;
         if (bgWl >= 20 * MIN && wlFrac >= 0.15) {
-            if (fgs >= bgWl * 0.8) warn.add("后台持唤醒锁 " + dur(bgWl) + fgsNote);
-            else bad.add("后台持唤醒锁 " + dur(bgWl) + "（占放电时长 " + Math.round(wlFrac * 100) + "%），阻止手机深睡");
+            if (fgs >= bgWl * 0.8) warn.add("Held background wakelock for " + dur(bgWl) + fgsNote);
+            else bad.add("Held background wakelock for " + dur(bgWl) + " (" + Math.round(wlFrac * 100) + "% of discharge duration), preventing deep sleep");
         } else if (bgWl >= 10 * MIN && wlFrac >= 0.05) {
-            warn.add("后台持唤醒锁 " + dur(bgWl) + "（占放电时长 " + Math.round(wlFrac * 100) + "%）");
+            warn.add("Held background wakelock for " + dur(bgWl) + " (" + Math.round(wlFrac * 100) + "% of discharge duration)");
         }
 
         long alarms = a.optLong("alarms");
         double perHour = hours > 0 ? alarms / hours : 0;
         if (alarms >= 30 && perHour >= 30) {
-            bad.add(String.format(Locale.US, "唤醒闹钟 %d 次（%.0f 次/小时），频繁把手机从休眠中唤醒", alarms, perHour));
+            bad.add(String.format(Locale.US, "Wakeup alarm %d times (%.0f times/hr), frequently waking phone from sleep", alarms, perHour));
         } else if (alarms >= 20 && perHour >= 10) {
-            warn.add(String.format(Locale.US, "唤醒闹钟 %d 次（%.0f 次/小时）", alarms, perHour));
+            warn.add(String.format(Locale.US, "Wakeup alarm %d times (%.0f times/hr)", alarms, perHour));
         }
 
         long gps = a.optLong("gpsMs");
         if (gps >= 30 * MIN && gps > top * 2) {
-            (gps >= 2 * HOUR ? bad : warn).add("后台定位累计 " + dur(gps));
+            (gps >= 2 * HOUR ? bad : warn).add("Cumulative background location: " + dur(gps));
         }
 
         long cpu = a.optLong("cpuMs");
         if (cpu > top + fgs + 30 * MIN) {
             long bgCpu = cpu - top - fgs;
-            (bgCpu >= 90 * MIN ? bad : warn).add("CPU 运行 " + dur(cpu) + "，远超前台使用时长 " + dur(top) + "，主要在后台运行");
+            (bgCpu >= 90 * MIN ? bad : warn).add("CPU ran for " + dur(cpu) + ", far exceeding foreground usage of " + dur(top) + "; mostly running in background");
         }
 
         if (top < 15 * MIN && mah >= 30 && share >= 0.08) {
-            (fgsNote.isEmpty() ? bad : warn).add(String.format(Locale.US, "几乎没在前台使用（%s），却耗电 %.0f mAh（占应用总耗电 %d%%）",
+            (fgsNote.isEmpty() ? bad : warn).add(String.format(Locale.US, "Barely used in foreground (%s), but consumed %.0f mAh (%d%% of total app drain)",
                     dur(top), mah, Math.round(share * 100)) + fgsNote);
         } else if (top < 15 * MIN && mah >= 15 && share >= 0.04) {
-            warn.add(String.format(Locale.US, "前台使用仅 %s，后台耗电 %.0f mAh（占 %d%%）",
+            warn.add(String.format(Locale.US, "Foreground usage only %s, background drain %.0f mAh (%d%%)",
                     dur(top), mah, Math.round(share * 100)));
         }
     }
 
-    /** 每小时掉电百分比；数据不足时返回 -1。 */
+    /** Drain percentage per hour; returns -1 when data is insufficient. */
     private static double rate(double mah, long pct, double cap, long ms) {
         if (ms < 10 * MIN) return -1;
         double h = ms / (double) HOUR;
@@ -388,13 +390,13 @@ public final class DrainStats {
         return new JSONObject().put("level", level).put("key", key).put("msg", msg);
     }
 
-    // ------------------------------------------------------------------ 工具
+    // ------------------------------------------------------------------ Utilities
 
     public static String dur(long ms) {
         long m = ms / MIN;
-        if (m < 1) return (ms / 1000) + "秒";
-        if (m < 60) return m + "分钟";
-        return (m / 60) + "时" + (m % 60) + "分";
+        if (m < 1) return (ms / 1000) + "s";
+        if (m < 60) return m + "m";
+        return (m / 60) + "h " + (m % 60) + "m";
     }
 
     private static Uid uid(Map<Integer, Uid> m, int uid) {
@@ -403,7 +405,7 @@ public final class DrainStats {
         return u;
     }
 
-    /** kwl / wr 行：名称带引号且可能含逗号，名称之后依次为 时长ms、次数。 */
+    /** kwl / wr lines: name is quoted and may contain commas; followed by duration ms and count. */
     private static Object[] quotedNameTime(String[] a) {
         StringBuilder name = new StringBuilder();
         int i = 4;

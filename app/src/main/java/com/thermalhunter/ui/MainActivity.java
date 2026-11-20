@@ -48,17 +48,17 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements Monitor.Listener {
 
-    private static final String[] TABS = {"热源排行", "KSU模块", "LSP模块", "唤醒耗电"};
-    private static final String[] MODE_NAMES = {"自动", "仅 root", "仅 Shizuku"};
+    private static final String[] TABS = {"Top Heat", "KSU Modules", "LSP Modules", "Wakeup Drain"};
+    private static final String[] MODE_NAMES = {"Auto", "Root Only", "Shizuku Only"};
     private static final String[] MODE_DESCS = {
-            "优先使用 root，没有 root 时自动改用 Shizuku",
-            "通过 KernelSU 等获取超级用户权限，功能最完整",
-            "通过无线调试 / ADB 以 shell 权限运行，无需 root（模块管理与杀进程不可用）"};
+            "Prioritize root; automatically fall back to Shizuku when root is unavailable",
+            "Obtain superuser permissions via KernelSU etc.; most complete features",
+            "Run with shell permissions via Wireless Debugging / ADB, no root required (module management & kill processes unavailable)"};
 
-    /** 底部导航：监控 / 耗电 / 工具 / 设置。 */
+    /** Bottom navigation: Monitor / Drain / Tools / Settings. */
     static final String EXTRA_PAGE = "page";
     static final int PAGE_MONITOR = 0, PAGE_DRAIN = 1, PAGE_TOOLS = 2, PAGE_SETTINGS = 3;
-    private static final String[] PAGE_NAMES = {"监控", "耗电", "工具", "设置"};
+    private static final String[] PAGE_NAMES = {"Monitor", "Drain", "Tools", "Settings"};
     private static final int[] PAGE_ICONS = {R.drawable.ic_monitor, R.drawable.ic_battery, R.drawable.ic_tools, R.drawable.ic_tune};
 
     private Monitor mon;
@@ -66,7 +66,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private Ui u;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private Analyzer.Result result;
-    /** 监控页列表的分段：热源 / KSU / LSP / 唤醒。 */
+    /** Segment tabs on monitor page: Heat / KSU / LSP / Wake. */
     private int tab;
     private int page = -1;
     private boolean pendingFloat;
@@ -78,16 +78,16 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private ImageView floatBtn;
     private TextView profStatus;
     private final int[] tabCounts = new int[TABS.length];
-    // 只在状态变化时重设背景，避免每次刷新都重绘
+    // Only reset background on state change to avoid redrawing on every tick
     private int[] lastGrad;
     private int lastCleanState = -1;
     private final TextView[] tabViews = new TextView[TABS.length];
     private ListView list;
-    // 监控页的异常 / 清理卡片
+    // Anomaly / clean card on monitor page
     private LinearLayout cleanCard;
     private ImageView cleanIcon;
     private TextView cleanTitle, cleanSub, cleanAction;
-    // 底部导航与各页
+    // Bottom navigation and pages
     private final View[] pages = new View[PAGE_NAMES.length];
     private final View[][] navItems = new View[PAGE_NAMES.length][]; // {item, pill, icon, label, dot}
     private DrainPage drainPage;
@@ -97,7 +97,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private final Runnable hideSnack = () -> snack.animate().alpha(0f).translationY(20f).setDuration(200)
             .withEndAction(() -> snack.setVisibility(View.GONE)).start();
 
-    // ------------------------------------------------------------------ 生命周期
+    // ------------------------------------------------------------------ Lifecycle
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -105,15 +105,15 @@ public class MainActivity extends Activity implements Monitor.Listener {
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
         u = new Ui(this);
         getWindow().setStatusBarColor(u.bg);
-        getWindow().setNavigationBarColor(u.card); // 与底部导航栏同色
+        getWindow().setNavigationBarColor(u.card); // Same color as bottom nav bar
         mon = Monitor.get(this);
         setContentView(buildLayout());
         int p = savedInstanceState != null ? savedInstanceState.getInt(EXTRA_PAGE, PAGE_MONITOR)
                 : getIntent().getIntExtra(EXTRA_PAGE, PAGE_MONITOR);
         selectPage(p);
-        syncVpnHideConfig(); // 把名单写到 system 可读的配置，VPN 隐身统一由 system_server 层按名单完成
-        syncScreenshotConfig(); // 截图限制解除名单同理
-        DrainWatcher.schedule(this); // 后台耗电监测（按设置开关）
+        syncVpnHideConfig(); // Write list to system-readable config; VPN stealth handled uniformly at system_server layer
+        syncScreenshotConfig(); // Same for screenshot restriction bypass list
+        DrainWatcher.schedule(this); // Background drain monitoring (based on settings switch)
     }
 
     @Override
@@ -128,7 +128,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         out.putInt(EXTRA_PAGE, page);
     }
 
-    /** 只在界面可见时订阅采样；悬浮窗开启时由悬浮窗单独订阅。 */
+    /** Subscribe to sampling only when UI is visible; floating overlay subscribes separately when enabled. */
     @Override
     protected void onResume() {
         super.onResume();
@@ -138,7 +138,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         if (pendingFloat) {
             pendingFloat = false;
             if (Settings.canDrawOverlays(this)) startFloat();
-            else snack("未授予悬浮窗权限", false);
+            else snack("Overlay permission not granted", false);
         }
     }
 
@@ -160,7 +160,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         if (error) chip("");
     }
 
-    /** 不在监控页时放慢采样（5 秒），只用于保持连接状态与导航提示点。 */
+    /** Slow down sampling (5s) when not on monitor page, keeping connection state & nav dots active. */
     @Override
     public boolean wantsFast() {
         return page == PAGE_MONITOR;
@@ -170,12 +170,12 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return mon;
     }
 
-    /** 当前连接方式："root" / "shell" / ""（未连接）。 */
+    /** Current connection mode: "root" / "shell" / "" (disconnected). */
     String connMode() {
         return connMode;
     }
 
-    // ------------------------------------------------------------------ 布局
+    // ------------------------------------------------------------------ Layout
 
     private View buildLayout() {
         FrameLayout frame = new FrameLayout(this);
@@ -197,7 +197,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         }
         rootView.addView(buildNav());
 
-        // 轻提示（替代系统 Toast），位于底部导航上方
+        // Snack hint (replaces system Toast), located above bottom nav bar
         snack = u.text("", 13, Color.WHITE, false);
         snack.setPadding(u.dp(16), u.dp(12), u.dp(16), u.dp(12));
         snack.setLineSpacing(u.dp(2), 1f);
@@ -209,7 +209,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return frame;
     }
 
-    // ------------------------------------------------------------------ 底部导航
+    // ------------------------------------------------------------------ Bottom Navigation
 
     private View buildNav() {
         LinearLayout nav = new LinearLayout(this);
@@ -250,7 +250,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private void selectPage(int p) {
         if (p < 0 || p >= pages.length) p = PAGE_MONITOR;
         if (p == page) {
-            // 再次点击当前页：回到顶部
+            // Tap current tab again: scroll to top
             if (p == PAGE_MONITOR && list != null) list.smoothScrollToPosition(0);
             else if (pages[p] instanceof android.widget.ScrollView) ((android.widget.ScrollView) pages[p]).smoothScrollTo(0, 0);
             return;
@@ -275,9 +275,9 @@ public class MainActivity extends Activity implements Monitor.Listener {
             ((TextView) n[3]).setTextColor(sel ? u.accent : u.dim);
         }
         if (p == PAGE_DRAIN) drainPage.onShown();
-        if (p == PAGE_SETTINGS) fillSettings(); // 每次进入重建，开关状态与其他页保持一致
+        if (p == PAGE_SETTINGS) fillSettings(); // Rebuild each time to sync toggle states with other pages
         if (p == PAGE_TOOLS) refreshToolDescs();
-        mon.kick(); // 采样间隔可能变化
+        mon.kick(); // Sampling interval may change
     }
 
     private void navDot(int p, boolean on) {
@@ -290,22 +290,22 @@ public class MainActivity extends Activity implements Monitor.Listener {
         else super.onBackPressed();
     }
 
-    // ------------------------------------------------------------------ 监控页
+    // ------------------------------------------------------------------ Monitor Page
 
     private View buildMonitorPage() {
-        // 头部（随列表一起滚动）
+        // Header (scrolls with list)
         LinearLayout header = u.col();
         header.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(6));
 
-        // 顶栏：标题 / 设备 / 模式标签 / 悬浮窗
+        // Top bar: title / device / mode chip / floating overlay
         LinearLayout top = u.row();
         LinearLayout titleCol = u.col();
         LinearLayout titleRow = u.row();
-        titleRow.addView(u.text("热源猎手", 24, u.fg, true));
+        titleRow.addView(u.text("ThermalHunter", 24, u.fg, true));
         modeChip = u.chip("", u.dim);
         titleRow.addView(modeChip, Ui.lp(-2, -2, u.dp(10), 0, 0, 0));
         titleCol.addView(titleRow);
-        headDevice = u.text("正在连接…", 12, u.dim, false);
+        headDevice = u.text("Connecting…", 12, u.dim, false);
         headDevice.setSingleLine(true);
         headDevice.setEllipsize(TextUtils.TruncateAt.END);
         titleCol.addView(headDevice, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
@@ -314,18 +314,18 @@ public class MainActivity extends Activity implements Monitor.Listener {
         headKernel.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         titleCol.addView(headKernel);
         top.addView(titleCol, Ui.weight(1));
-        floatBtn = u.iconButton(R.drawable.ic_float, "悬浮窗", v -> toggleFloat());
+        floatBtn = u.iconButton(R.drawable.ic_float, "Floating Overlay", v -> toggleFloat());
         top.addView(floatBtn, Ui.lp(u.dp(42), u.dp(42), u.dp(8), 0, 0, 0));
         header.addView(top);
         chip("");
 
-        // 温度 / 功耗卡片
+        // Temperature / Power card
         hero = u.row();
         hero.setPadding(u.dp(18), u.dp(16), u.dp(18), u.dp(18));
         hero.setBackground(Ui.gradient(Ui.GRAD_NONE, u.dp(24)));
         hero.setElevation(u.dp(2));
         LinearLayout hl = u.col();
-        heroLabel = u.text("SoC 温度", 12, 0xDDFFFFFF, false);
+        heroLabel = u.text("SoC Temperature", 12, 0xDDFFFFFF, false);
         heroTemp = u.text("--", 40, Color.WHITE, true);
         heroTemp.setFontFeatureSettings("tnum");
         heroTempSub = u.text("", 12, 0xDDFFFFFF, false);
@@ -335,7 +335,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         hero.addView(hl, Ui.weight(1));
         LinearLayout hr = u.col();
         hr.setGravity(Gravity.END);
-        heroPowerLabel = u.text("放电功耗", 12, 0xDDFFFFFF, false);
+        heroPowerLabel = u.text("Discharge Power", 12, 0xDDFFFFFF, false);
         heroPower = u.text("--", 26, Color.WHITE, true);
         heroPower.setFontFeatureSettings("tnum");
         heroPowerSub = u.text("", 12, 0xDDFFFFFF, false);
@@ -345,12 +345,12 @@ public class MainActivity extends Activity implements Monitor.Listener {
         hero.addView(hr, Ui.lp(-2, -2, u.dp(12), 0, 0, 0));
         header.addView(hero, Ui.lp(-1, -2, 0, u.dp(14), 0, 0));
 
-        // 负载卡片：CPU 各簇频率 + GPU
+        // Load card: CPU cluster frequencies + GPU
         LinearLayout load = u.col();
         load.setPadding(u.dp(14), u.dp(12), u.dp(14), u.dp(14));
         load.setBackground(u.card(u.dp(20)));
         LinearLayout lt = u.row();
-        lt.addView(u.text("实时负载", 14, u.fg, true), Ui.weight(1));
+        lt.addView(u.text("Real-Time Load", 14, u.fg, true), Ui.weight(1));
         loadSummary = u.text("", 12, u.dim, false);
         loadSummary.setFontFeatureSettings("tnum");
         lt.addView(loadSummary);
@@ -359,7 +359,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         load.addView(clusterRow, Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
         header.addView(load, Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
 
-        // 异常 / 一键清理卡片（取代原来固定在底部的大按钮）
+        // Anomaly / One-click clean card (replaces previous large bottom button)
         cleanCard = u.row();
         cleanCard.setPadding(u.dp(14), u.dp(12), u.dp(14), u.dp(12));
         FrameLayout ib = new FrameLayout(this);
@@ -368,27 +368,27 @@ public class MainActivity extends Activity implements Monitor.Listener {
         ib.addView(cleanIcon, new FrameLayout.LayoutParams(u.dp(22), u.dp(22), Gravity.CENTER));
         cleanCard.addView(ib, Ui.lp(u.dp(40), u.dp(40), 0, 0, u.dp(12), 0));
         LinearLayout cc = u.col();
-        cleanTitle = u.text("正在检测…", 15, u.fg, true);
+        cleanTitle = u.text("Scanning…", 15, u.fg, true);
         cleanSub = u.text("", 12, u.dim, false);
         cleanSub.setSingleLine(true);
         cleanSub.setEllipsize(TextUtils.TruncateAt.END);
         cc.addView(cleanTitle);
         cc.addView(cleanSub, Ui.lp(-1, -2, 0, u.dp(1), 0, 0));
         cleanCard.addView(cc, Ui.weight(1));
-        cleanAction = u.text("一键清理", 13, Color.WHITE, true);
+        cleanAction = u.text("Clean", 13, Color.WHITE, true);
         cleanAction.setPadding(u.dp(14), u.dp(8), u.dp(14), u.dp(8));
         cleanCard.addView(cleanAction, Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
         cleanCard.setOnClickListener(v -> confirmClean());
         header.addView(cleanCard, Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
         paintCleanCard(0);
 
-        // 提示条
+        // Banner alert
         banner = u.note("", u.warn);
         banner.setTextSize(12);
         banner.setVisibility(View.GONE);
         header.addView(banner, Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
 
-        // 分段式标签
+        // Segmented tabs
         LinearLayout tabs = new LinearLayout(this);
         tabs.setPadding(u.dp(4), u.dp(4), u.dp(4), u.dp(4));
         tabs.setBackground(u.card(u.dp(16)));
@@ -410,7 +410,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         header.addView(tabs, Ui.lp(-1, -2, 0, u.dp(16), 0, u.dp(4)));
         updateTabs();
 
-        // 自动归因状态（仅 LSP 模块页、root 模式）
+        // Auto-attribution status (LSP module page only, root mode)
         profStatus = u.note("", u.dim);
         profStatus.setTextSize(12);
         profStatus.setVisibility(View.GONE);
@@ -418,13 +418,13 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
         list = new ListView(this);
         list.setDivider(null);
-        list.setSelector(new ColorDrawable(Color.TRANSPARENT)); // 卡片自带水波纹
+        list.setSelector(new ColorDrawable(Color.TRANSPARENT)); // Cards have their own ripple
         list.setPadding(0, 0, 0, u.dp(12));
         list.setClipToPadding(false);
         list.setVerticalScrollBarEnabled(false);
         list.addHeaderView(header, null, false);
         LinearLayout footer = new LinearLayout(this);
-        emptyText = u.text("正在采集…", 13, u.dim, false);
+        emptyText = u.text("Sampling…", 13, u.dim, false);
         emptyText.setGravity(Gravity.CENTER);
         emptyText.setPadding(u.dp(24), u.dp(36), u.dp(24), u.dp(36));
         footer.addView(emptyText, new LinearLayout.LayoutParams(-1, -2));
@@ -437,7 +437,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return list;
     }
 
-    /** 异常卡片配色：有异常为红色，否则为绿色的「状态良好」。 */
+    /** Clean card color scheme: red when anomalies exist, green "Good State" otherwise. */
     private void paintCleanCard(int bad) {
         int state = bad > 0 ? 1 : 0;
         if (state == lastCleanState) return;
@@ -452,7 +452,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         cleanAction.setBackground(Ui.round(bad > 0 ? u.bad : u.sunken, u.dp(16)));
     }
 
-    // ------------------------------------------------------------------ 工具页
+    // ------------------------------------------------------------------ Tools Page
 
     private View buildToolsPage() {
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
@@ -460,26 +460,26 @@ public class MainActivity extends Activity implements Monitor.Listener {
         sv.setVerticalScrollBarEnabled(false);
         LinearLayout col = u.col();
         col.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(24));
-        col.addView(u.text("工具", 24, u.fg, true));
-        col.addView(u.text("系统层修复与实用功能", 12, u.dim, false), Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
+        col.addView(u.text("Tools", 24, u.fg, true));
+        col.addView(u.text("System-level fixes & utilities", 12, u.dim, false), Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
 
-        col.addView(u.sectionTitle("应用兼容"), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
+        col.addView(u.sectionTitle("App Compatibility"), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
         toolVpnDesc = u.text(vpnHideSummary(), 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_vpn, u.good, "VPN 隐身", toolVpnDesc, this::openVpnHidePicker),
+        col.addView(menuCard(R.drawable.ic_vpn, u.good, "VPN Stealth", toolVpnDesc, this::openVpnHidePicker),
                 Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
-        toolCompatDesc = u.text("正在检测状态…", 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_compat, 0xFFF59E0B, "加固应用兼容修复", toolCompatDesc, this::openCompatSheet),
+        toolCompatDesc = u.text("Checking status…", 12, u.dim, false);
+        col.addView(menuCard(R.drawable.ic_compat, 0xFFF59E0B, "Hardened App Compatibility Fix", toolCompatDesc, this::openCompatSheet),
                 Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
         toolShotDesc = u.text(shotSummary(), 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_shot, 0xFF10B981, "截图限制解除", toolShotDesc, this::openShotPicker),
+        col.addView(menuCard(R.drawable.ic_shot, 0xFF10B981, "Bypass Screenshot Restrictions", toolShotDesc, this::openShotPicker),
                 Ui.lp(-1, -2, 0, 0, 0, 0));
 
-        col.addView(u.sectionTitle("显示"), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
+        col.addView(u.sectionTitle("Display"), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
         toolRefreshDesc = u.text(refreshSummary(), 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_refresh, 0xFF8B5CF6, "屏幕刷新率", toolRefreshDesc, this::openRefreshSheet),
+        col.addView(menuCard(R.drawable.ic_refresh, 0xFF8B5CF6, "Screen Refresh Rate", toolRefreshDesc, this::openRefreshSheet),
                 Ui.lp(-1, -2, 0, 0, 0, u.dp(10)));
         toolFloatDesc = u.text("", 12, u.dim, false);
-        col.addView(menuCard(R.drawable.ic_float, 0xFF0EA5E9, "悬浮窗", toolFloatDesc, this::toggleFloat),
+        col.addView(menuCard(R.drawable.ic_float, 0xFF0EA5E9, "Floating Overlay", toolFloatDesc, this::toggleFloat),
                 Ui.lp(-1, -2, 0, 0, 0, 0));
 
         sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
@@ -491,15 +491,15 @@ public class MainActivity extends Activity implements Monitor.Listener {
         toolShotDesc.setText(shotSummary());
         toolRefreshDesc.setText(refreshSummary());
         updateFloatBtn();
-        CompatFix.query((ok, msg, st) -> toolCompatDesc.setText(ok ? CompatFix.desc(st) : "需要 root · 点击查看"));
+        CompatFix.query((ok, msg, st) -> toolCompatDesc.setText(ok ? CompatFix.desc(st) : "Root required · Tap to view"));
     }
 
     private String refreshSummary() {
         int fps = prefs.getInt("lock_fps", 0);
-        return fps > 0 ? "已锁定 " + fps + "Hz · App 运行期间保持" : "由系统自动调节 · 可锁定高刷";
+        return fps > 0 ? "Locked to " + fps + "Hz · Maintained while app runs" : "Auto-adjusted by system · Can lock high refresh rate";
     }
 
-    /** 菜单卡片：左侧彩色图标 + 标题 + 描述 + 右箭头。desc 由调用方传入以便动态更新。 */
+    /** Menu card: Left colored icon + title + description + right chevron. desc passed by caller for dynamic updates. */
     private View menuCard(int icon, int tint, String title, TextView desc, Runnable onClick) {
         LinearLayout r = u.row();
         r.setPadding(u.dp(16), u.dp(15), u.dp(16), u.dp(15));
@@ -537,10 +537,10 @@ public class MainActivity extends Activity implements Monitor.Listener {
         banner.setVisibility(msg == null || msg.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
-    /** 顶栏模式标签：root / shell / 未连接。 */
+    /** Top bar mode chip: root / shell / disconnected. */
     private void chip(String mode) {
         int col = "root".equals(mode) ? u.good : "shell".equals(mode) ? u.accent : u.dim;
-        modeChip.setText("root".equals(mode) ? "ROOT" : "shell".equals(mode) ? "SHIZUKU" : "未连接");
+        modeChip.setText("root".equals(mode) ? "ROOT" : "shell".equals(mode) ? "SHIZUKU" : "DISCONNECTED");
         modeChip.setTextColor(col);
         modeChip.setBackground(Ui.round(Ui.tint(col), u.dp(10)));
     }
@@ -557,7 +557,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         ui.postDelayed(hideSnack, 2800);
     }
 
-    // ------------------------------------------------------------------ 渲染
+    // ------------------------------------------------------------------ Rendering
 
     private void render(Analyzer.Result r) {
         result = r;
@@ -569,18 +569,18 @@ public class MainActivity extends Activity implements Monitor.Listener {
         JSONObject dev = s.optJSONObject("device");
         if (dev != null) {
             headDevice.setText(dev.optString("model") + " · " + dev.optString("soc") + " · Android " + dev.optString("android"));
-            headKernel.setText("内核 " + dev.optString("kernel") + (shell ? "" : " · " + s.optString("rootImpl")));
+            headKernel.setText("Kernel " + dev.optString("kernel") + (shell ? "" : " · " + s.optString("rootImpl")));
         }
 
-        // 温度卡片
+        // Temperature card
         Object[] mt = Ui.mainTemp(r);
         double mainTemp = (double) mt[0];
         boolean hasSoc = r.maxTemp > -999, hasSkin = r.skinTemp > -999;
         heroLabel.setText((String) mt[1]);
         heroTemp.setText(mainTemp > -999 ? Analyzer.fmt(mainTemp) + "°C" : "--");
         List<String> tsub = new ArrayList<>();
-        if (hasSoc && hasSkin) tsub.add("机身 " + Analyzer.fmt(r.skinTemp) + "°");
-        if ((hasSoc || hasSkin) && r.batteryTemp > -999) tsub.add("电池 " + Analyzer.fmt(r.batteryTemp) + "°");
+        if (hasSoc && hasSkin) tsub.add("Device " + Analyzer.fmt(r.skinTemp) + "°");
+        if ((hasSoc || hasSkin) && r.batteryTemp > -999) tsub.add("Battery " + Analyzer.fmt(r.batteryTemp) + "°");
         heroTempSub.setText(TextUtils.join("  ·  ", tsub));
         double hot = Math.max(r.maxTemp, r.skinTemp);
         if (hot <= -999) hot = r.batteryTemp;
@@ -595,18 +595,18 @@ public class MainActivity extends Activity implements Monitor.Listener {
             long lv = bat.optLong("level", -1);
             String lvs = lv >= 0 ? lv + "%" : "--";
             if (r.discharging) {
-                heroPowerLabel.setText("放电功耗");
+                heroPowerLabel.setText("Discharge Power");
                 heroPower.setText(String.format(Locale.US, "%.2f W", bat.optLong("powerMw") / 1000.0));
-                heroPowerSub.setText(ma + " mA · 电量 " + lvs);
+                heroPowerSub.setText(ma + " mA · Battery " + lvs);
             } else {
                 String st = bat.optString("status");
-                heroPowerLabel.setText("Full".equalsIgnoreCase(st) ? "已充满" : st.isEmpty() ? "电池" : "充电中");
+                heroPowerLabel.setText("Full".equalsIgnoreCase(st) ? "Fully Charged" : st.isEmpty() ? "Battery" : "Charging");
                 heroPower.setText(ma > 0 ? ma + " mA" : "--");
-                heroPowerSub.setText("电量 " + lvs);
+                heroPowerSub.setText("Battery " + lvs);
             }
         }
 
-        // 负载卡片
+        // Load card
         List<String> ls = new ArrayList<>();
         JSONObject cpu = s.optJSONObject("cpu");
         if (cpu != null) ls.add("CPU " + Analyzer.fmt(cpu.optDouble("usage")) + "%");
@@ -622,31 +622,31 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
         List<String> notes = new ArrayList<>();
         if (shell) {
-            notes.add("Shizuku 模式：可查看温度、功耗、进程排行，可强行停止 / 停用应用；"
-                    + "KSU / LSP 模块、应用唤醒统计、杀死其他进程需要 root。");
+            notes.add("Shizuku mode: View temperature, power, process rankings; force stop / disable apps. "
+                    + "KSU / LSP modules, wakeup stats, and killing other processes require root.");
         } else if (!ModuleStatus.isActive()) {
-            notes.add("LSPosed 模块未激活：在 LSPosed 中启用本模块并勾选「系统框架」后重启，才能统计应用唤醒锁/闹钟。");
+            notes.add("LSPosed module inactive: Enable module in LSPosed with 'System Framework' scope and reboot to track app wakelocks/alarms.");
         } else if (!r.hookOk) {
-            notes.add(r.hookAgeSec < 0 ? "模块已激活，但系统框架 hook 未生效（作用域需勾选「系统框架」并重启）"
-                    : "唤醒统计数据已过期 " + r.hookAgeSec + " 秒");
+            notes.add(r.hookAgeSec < 0 ? "Module active, but system framework hook not working (enable 'System Framework' scope and reboot)"
+                    : "Wakeup stats expired by " + r.hookAgeSec + " s");
         }
         JSONObject lsp = s.optJSONObject("lsp");
         if (!shell && lsp != null && !lsp.optBoolean("available") && lsp.has("error")) {
-            notes.add("LSPosed：" + lsp.optString("error"));
+            notes.add("LSPosed: " + lsp.optString("error"));
         }
         if (!shell && r.prof != null && !r.prof.optBoolean("ok") && mon.autoProfEnabled()) {
-            notes.add("LSP 模块自动归因不可用：" + r.prof.optString("error"));
+            notes.add("LSP module auto-attribution unavailable: " + r.prof.optString("error"));
         }
         if (notes.isEmpty()) banner.setVisibility(View.GONE);
         else banner(TextUtils.join("\n", notes), shell ? u.accent : u.warn);
 
         paintCleanCard(r.badCount);
         if (r.badCount > 0) {
-            cleanTitle.setText("发现 " + r.badCount + " 个异常对象");
+            cleanTitle.setText(r.badCount == 1 ? "1 anomaly detected" : r.badCount + " anomalies detected");
             cleanSub.setText(cleanPreview(r));
         } else {
-            cleanTitle.setText("未发现异常");
-            cleanSub.setText("没有明显的发热 / 耗电元凶");
+            cleanTitle.setText("No Anomalies Detected");
+            cleanSub.setText("No significant heat or battery drain culprits");
         }
         navDot(PAGE_MONITOR, r.badCount > 0);
         navDot(PAGE_DRAIN, drainPage.hasBad());
@@ -675,7 +675,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         emptyText.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
     }
 
-    /** 异常卡片的副标题：列出前几个异常对象的名称。 */
+    /** Subtitle of anomaly card: lists first few abnormal entity names. */
     private String cleanPreview(Analyzer.Result r) {
         List<String> names = new ArrayList<>();
         for (List<Entity> l : java.util.Arrays.asList(r.heat, r.ksu, r.lsp)) {
@@ -683,7 +683,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
                 if (e.level == Analyzer.BAD && names.size() < 3 && !names.contains(u.label(e))) names.add(u.label(e));
             }
         }
-        return names.isEmpty() ? "点击查看并处理" : TextUtils.join("、", names) + (r.badCount > names.size() ? " 等" : "");
+        return names.isEmpty() ? "Tap to view and resolve" : TextUtils.join(", ", names) + (r.badCount > names.size() ? " etc." : "");
     }
 
     private static int flagged(List<Entity> l) {
@@ -694,15 +694,15 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
     private String emptyMessage(boolean shell) {
         switch (tab) {
-            case 1: return shell ? "Shizuku 模式无法读取 KSU 模块（需要 root）" : "没有发现 KSU 模块";
-            case 2: return shell ? "Shizuku 模式无法读取 LSPosed 模块（需要 root）" : "没有发现 LSPosed 模块";
-            case 3: return shell ? "Shizuku 模式无法统计应用唤醒（需要 root + LSPosed）"
-                    : "暂无唤醒数据（需要在 LSPosed 中激活本模块）";
-            default: return "没有明显的热源，手机状态良好 👍";
+            case 1: return shell ? "Shizuku mode cannot read KSU modules (root required)" : "No KSU modules found";
+            case 2: return shell ? "Shizuku mode cannot read LSPosed modules (root required)" : "No LSPosed modules found";
+            case 3: return shell ? "Shizuku mode cannot track app wakeups (root + LSPosed required)"
+                    : "No wakeup data yet (requires activating this module in LSPosed)";
+            default: return "No significant heat sources, device is running cool 👍";
         }
     }
 
-    /** CPU 各簇：当前频率、频率条、限频提示。 */
+    /** CPU clusters: Current freq, freq bar, throttled hint. */
     private void renderClusters(JSONArray pol) {
         int n = pol == null ? 0 : pol.length();
         if (clusterRow.getChildCount() != n) {
@@ -740,12 +740,12 @@ public class MainActivity extends Activity implements Monitor.Listener {
             ((TextView) v[1]).setText(Ui.freq(cur));
             ((Ui.Bar) v[2]).set(max > 0 ? cur / (float) max : 0, throttled ? u.warn : u.accent);
             TextView lim = (TextView) v[3];
-            lim.setText(throttled ? "限频 " + Ui.freq(limit) : "最高 " + Ui.freq(max));
+            lim.setText(throttled ? "Throttled " + Ui.freq(limit) : "Max " + Ui.freq(max));
             lim.setTextColor(throttled ? u.warn : u.dim);
         }
     }
 
-    /** 实测明细里按进程的分布，如 "system_server 3.1% · 微信 0.4%"。 */
+    /** Distribution by process in measured details, e.g. "system_server 3.1% · WeChat 0.4%". */
     private String measuredWhere(Entity e, int max) {
         JSONObject procs = e.measured == null ? null : e.measured.optJSONObject("procs");
         if (procs == null || procs.length() == 0) return "";
@@ -759,7 +759,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return TextUtils.join(" · ", out);
     }
 
-    /** 进程名转成可读名称：应用主进程用应用名。 */
+    /** Process name to readable name: app main process uses app name. */
     private String procName(String proc) {
         String pkg = proc.contains(":") ? proc.substring(0, proc.indexOf(':')) : proc;
         Object[] info = u.appInfo(pkg);
@@ -767,16 +767,16 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return proc.contains(":") ? info[0] + proc.substring(proc.indexOf(':')) : (String) info[0];
     }
 
-    /** LSP 模块的作用域里是否有正在运行的普通应用（不含 system_server）。 */
+    /** Whether LSP module's scope has running normal apps (excluding system_server). */
     private static boolean hasAppHost(Entity e) {
         return e.scopeRunning > (e.injectsSystem && e.systemCpu >= 0 ? 1 : 0);
     }
 
-    /** 列表卡片的次要信息（主数值已在右侧大字显示）。 */
+    /** Secondary info on list card (primary value shown in large font on right). */
     private String metrics(Entity e) {
         if (tab == 3) {
-            String s = "累计持锁 " + Ui.dur(e.wlHeldTotalMs) + " · 唤醒闹钟 " + e.alarmsTotal + " 次";
-            if (e.wlTag != null && !e.wlTag.isEmpty()) s += "\n锁: " + e.wlTag;
+            String s = "Total wakelock " + Ui.dur(e.wlHeldTotalMs) + " · Alarms " + e.alarmsTotal + " times";
+            if (e.wlTag != null && !e.wlTag.isEmpty()) s += "\nLock: " + e.wlTag;
             return s;
         }
         List<String> p = new ArrayList<>();
@@ -784,29 +784,29 @@ public class MainActivity extends Activity implements Monitor.Listener {
             p.add(e.sub);
             String where = measuredWhere(e, 2);
             if (!where.isEmpty()) p.add(where);
-            if (!e.pids.isEmpty()) p.add("自身 CPU " + Analyzer.fmt(e.cpuAvg) + "%");
+            if (!e.pids.isEmpty()) p.add("Self CPU " + Analyzer.fmt(e.cpuAvg) + "%");
             return TextUtils.join(" · ", p);
         }
         if (e.type == Analyzer.KSU && e.measuredCpu > 0.05) {
-            p.add("注入实测 " + Analyzer.fmt(e.measuredCpu) + "%（" + measuredWhere(e, 2) + "）");
+            p.add("Injected measured " + Analyzer.fmt(e.measuredCpu) + "% (" + measuredWhere(e, 2) + ")");
         }
         if (e.powerMw > 0) p.add("≈" + e.powerMw + "mW");
-        if (e.rssKb > 0) p.add("内存 " + e.rssKb / 1024 + "MB");
-        if (e.type == Analyzer.KSU) p.add("进程 " + e.pids.size());
-        else if (e.pids.size() > 1) p.add(e.pids.size() + " 个进程");
+        if (e.rssKb > 0) p.add("RAM " + e.rssKb / 1024 + "MB");
+        if (e.type == Analyzer.KSU) p.add("Proc " + e.pids.size());
+        else if (e.pids.size() > 1) p.add(e.pids.size() + " processes");
         else if (e.pids.size() == 1) p.add("pid " + e.pids.get(0));
-        if (e.type == Analyzer.APP && e.wlFrac > 0.05) p.add("持锁 " + Math.round(e.wlFrac * 100) + "%");
+        if (e.type == Analyzer.APP && e.wlFrac > 0.05) p.add("Wakelock " + Math.round(e.wlFrac * 100) + "%");
         if (e.type == Analyzer.APP && e.minAdj <= 1000) p.add(Ui.adjName(e.minAdj));
         return TextUtils.join(" · ", p);
     }
 
-    // ------------------------------------------------------------------ 详情与操作
+    // ------------------------------------------------------------------ Details & Actions
 
     private void showDetail(Entity e) {
         Sheet s = new Sheet(this, u);
         String name = u.label(e);
 
-        // 头部：头像 + 名称 + 类型 + 状态
+        // Header: Avatar + Name + Type + Status
         LinearLayout head = u.row();
         FrameLayout av = u.avatar(52);
         u.bindAvatar(av, e, name);
@@ -821,43 +821,43 @@ public class MainActivity extends Activity implements Monitor.Listener {
         sub.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         tc.addView(sub, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
         LinearLayout chips = u.row();
-        if (e.level != Analyzer.OK) chips.addView(u.chip(e.level == Analyzer.BAD ? "异常" : "可疑", u.levelColor(e.level)));
-        if (!e.enabled) chips.addView(u.chip("已禁用", u.dim), Ui.lp(-2, -2, chips.getChildCount() > 0 ? u.dp(6) : 0, 0, 0, 0));
-        if (e.isProtected) chips.addView(u.chip("受保护", u.accent), Ui.lp(-2, -2, chips.getChildCount() > 0 ? u.dp(6) : 0, 0, 0, 0));
+        if (e.level != Analyzer.OK) chips.addView(u.chip(e.level == Analyzer.BAD ? "Anomaly" : "Suspicious", u.levelColor(e.level)));
+        if (!e.enabled) chips.addView(u.chip("Disabled", u.dim), Ui.lp(-2, -2, chips.getChildCount() > 0 ? u.dp(6) : 0, 0, 0, 0));
+        if (e.isProtected) chips.addView(u.chip("Protected", u.accent), Ui.lp(-2, -2, chips.getChildCount() > 0 ? u.dp(6) : 0, 0, 0, 0));
         if (chips.getChildCount() > 0) tc.addView(chips, Ui.lp(-2, -2, 0, u.dp(6), 0, 0));
         head.addView(tc, Ui.weight(1));
         s.add(head, Ui.lp(-1, -2, 0, 0, 0, 0));
 
-        // 数据块
+        // Data tiles
         s.add(statGrid(stats(e)), Ui.lp(-1, -2, 0, u.dp(16), 0, 0));
 
         if (!e.reasons.isEmpty() || !e.warnings.isEmpty()) {
-            s.section("诊断");
+            s.section("Diagnosis");
             for (String r : e.reasons) s.add(u.note(r, u.bad));
             for (String w : e.warnings) s.add(u.note(w, u.warn));
         }
         if (!e.tags.isEmpty()) {
-            s.section("标签");
+            s.section("Tags");
             s.add(u.text(TextUtils.join(" · ", e.tags), 13, u.fg, false));
         }
         if (tab == 3 && e.wlTag != null && !e.wlTag.isEmpty()) {
-            s.section("唤醒锁");
+            s.section("Wakelock");
             s.add(u.text(e.wlTag, 13, u.fg, false));
         }
         if (e.type == Analyzer.KSU && e.raw != null) {
-            s.section("模块信息");
+            s.section("Module Info");
             String desc = e.raw.optString("desc");
             if (!desc.isEmpty()) s.add(u.text(desc, 13, u.fg, false));
             List<String> scripts = new ArrayList<>();
             if (e.raw.optBoolean("service")) scripts.add("service.sh");
             if (e.raw.optBoolean("postfs")) scripts.add("post-fs-data.sh");
             if (e.raw.optBoolean("sysprop")) scripts.add("system.prop");
-            if (!scripts.isEmpty()) s.add(u.text("脚本：" + TextUtils.join("、", scripts), 13, u.dim, false));
+            if (!scripts.isEmpty()) s.add(u.text("Scripts: " + TextUtils.join(", ", scripts), 13, u.dim, false));
         }
         if ((e.type == Analyzer.LSP || e.type == Analyzer.KSU) && e.measured != null) {
             JSONObject procs = e.measured.optJSONObject("procs");
             if (procs != null && procs.length() > 0) {
-                s.section("实测占用分布（单核 %）");
+                s.section("Measured Usage Distribution (Single Core %)");
                 JSONArray arr = new JSONArray();
                 for (java.util.Iterator<String> it = procs.keys(); it.hasNext(); ) {
                     String k = it.next();
@@ -870,25 +870,25 @@ public class MainActivity extends Activity implements Monitor.Listener {
             }
             JSONArray methods = e.measured.optJSONArray("methods");
             if (methods != null && methods.length() > 0) {
-                s.section("最耗时的模块方法（单核 %）");
+                s.section("Most Time-Consuming Module Methods (Single Core %)");
                 s.add(listBox(methods, 5, "cpu"));
             }
         }
         if (e.type == Analyzer.LSP) {
             s.add(u.note(e.measuredCpu >= 0
-                    ? "「模块代码实测」来自自动归因：低频采样宿主进程，按调用栈把 CPU 归到模块。"
-                    + "hook 带来的间接开销（如被 hook 的方法无法内联）统计不到，实际影响可能略高。"
-                    : "暂无实测数据：上面的「宿主进程 CPU」是宿主的总占用，system_server 由所有注入系统框架的模块共用。"
-                    + "开启自动归因（root）后会显示模块代码的实测占用。", u.dim),
+                    ? "'Module Code Measured' comes from auto-attribution: low-frequency sampling of host processes, attributing CPU to module by call stack."
+                    + " Indirect overhead from hooks (e.g. inability to inline hooked methods) is not captured, so actual impact may be slightly higher."
+                    : "No measured data yet: 'Host Process CPU' above is total host usage; system_server is shared by all modules injected into the framework."
+                    + " Enable auto-attribution (root) to show measured module code usage.", u.dim),
                     Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
         }
         if (e.type == Analyzer.LSP && !e.scopes.isEmpty()) {
-            s.section("作用域（" + e.scopes.size() + "）");
-            String sc = TextUtils.join("、", e.scopes.subList(0, Math.min(40, e.scopes.size())));
+            s.section("Scope (" + e.scopes.size() + ")");
+            String sc = TextUtils.join(", ", e.scopes.subList(0, Math.min(40, e.scopes.size())));
             s.add(u.text(e.scopes.size() > 40 ? sc + " …" : sc, 13, u.fg, false));
         }
         if (!e.pids.isEmpty()) {
-            s.section("进程（" + e.pids.size() + "）");
+            s.section("Processes (" + e.pids.size() + ")");
             LinearLayout box = u.col();
             box.setPadding(u.dp(12), u.dp(8), u.dp(12), u.dp(8));
             box.setBackground(Ui.round(u.sunken, u.dp(14)));
@@ -905,94 +905,94 @@ public class MainActivity extends Activity implements Monitor.Listener {
             }
             s.add(box);
         }
-        if (e.isProtected) s.add(u.note("受保护对象：为防止死机 / 重启，不允许杀死或停用。", u.accent),
+        if (e.isProtected) s.add(u.note("Protected entity: To prevent system freeze or reboot, killing or disabling is not allowed.", u.accent),
                 Ui.lp(-1, -2, 0, u.dp(14), 0, 0));
 
-        // 操作
+        // Actions
         if (!e.isProtected && !e.isSelf) {
             switch (e.type) {
                 case Analyzer.APP:
-                    s.action("强行停止", Sheet.PRIMARY, () -> run("FORCESTOP " + e.pkg + " " + e.user));
-                    s.action("停用（冻结）应用", Sheet.DANGER, () -> confirm("停用「" + name + "」？",
-                            "停用后应用图标消失、不会再启动，可在本应用的详情里重新启用。", "停用",
+                    s.action("Force Stop", Sheet.PRIMARY, () -> run("FORCESTOP " + e.pkg + " " + e.user));
+                    s.action("Disable (Freeze) App", Sheet.DANGER, () -> confirm("Disable \"" + name + "\"?",
+                            "After disabling, the app icon disappears and it will not start again. It can be re-enabled in this app's details.", "Disable",
                             () -> run("APP_DISABLE " + e.pkg + " " + e.user)));
                     break;
                 case Analyzer.NATIVE:
-                    s.action("杀死进程", Sheet.DANGER, () -> runAll(killCmds(e)));
+                    s.action("Kill Process", Sheet.DANGER, () -> runAll(killCmds(e)));
                     break;
                 case Analyzer.KSU:
                     if (!e.pids.isEmpty()) {
-                        s.action("杀死模块的全部进程", Sheet.PRIMARY, () -> run("KSU_KILL " + e.ksuId));
+                        s.action("Kill All Module Processes", Sheet.PRIMARY, () -> run("KSU_KILL " + e.ksuId));
                     }
                     if (e.enabled) {
-                        s.action("禁用此模块", Sheet.DANGER, () -> confirm("禁用 KSU 模块「" + e.title + "」？",
-                                "进程会立即结束，模块的挂载 / 系统属性需重启后才会撤销。", "禁用",
+                        s.action("Disable This Module", Sheet.DANGER, () -> confirm("Disable KSU module \"" + e.title + "\"?",
+                                "Processes will terminate immediately; module mounts / system properties will be reverted after reboot.", "Disable",
                                 () -> run("KSU_DISABLE " + e.ksuId)));
                     } else {
-                        s.action("重新启用此模块", Sheet.PRIMARY, () -> run("KSU_ENABLE " + e.ksuId));
+                        s.action("Re-enable This Module", Sheet.PRIMARY, () -> run("KSU_ENABLE " + e.ksuId));
                     }
                     break;
                 case Analyzer.LSP:
                     if (e.enabled) {
-                        s.action("在 LSPosed 中禁用", Sheet.DANGER, () -> confirm("禁用 LSPosed 模块「" + name + "」？",
-                                "LSPosed 会缓存配置，需要重启手机才会停止注入。", "禁用",
+                        s.action("Disable in LSPosed", Sheet.DANGER, () -> confirm("Disable LSPosed module \"" + name + "\"?",
+                                "LSPosed caches config; phone must reboot to stop injection.", "Disable",
                                 () -> run("LSP_DISABLE " + e.lspPkg)));
                     } else {
-                        s.action("在 LSPosed 中重新启用", Sheet.PRIMARY, () -> run("LSP_ENABLE " + e.lspPkg));
+                        s.action("Re-enable in LSPosed", Sheet.PRIMARY, () -> run("LSP_ENABLE " + e.lspPkg));
                     }
                     if (!e.pids.isEmpty()) {
-                        s.action("强行停止模块应用本身", Sheet.NORMAL, () -> run("FORCESTOP " + e.lspPkg + " 0"));
+                        s.action("Force Stop Module App Itself", Sheet.NORMAL, () -> run("FORCESTOP " + e.lspPkg + " 0"));
                     }
                     break;
             }
         }
         if (e.type == Analyzer.APP) {
-            s.action("重新启用（解冻）应用", Sheet.NORMAL, () -> run("APP_ENABLE " + e.pkg + " " + e.user));
+            s.action("Re-enable (Unfreeze) App", Sheet.NORMAL, () -> run("APP_ENABLE " + e.pkg + " " + e.user));
         }
-        s.action("关闭", Sheet.NORMAL, null);
+        s.action("Close", Sheet.NORMAL, null);
         s.show();
     }
 
-    /** 详情页的数据块：{标题, 数值, 颜色}。 */
+    /** Data tiles in details page: {Title, Value, Color}. */
     private List<Object[]> stats(Entity e) {
         List<Object[]> l = new ArrayList<>();
         int lc = e.level == Analyzer.OK ? u.fg : u.levelColor(e.level);
         if (tab == 3) {
-            l.add(new Object[]{"近2分钟持锁", e.wlFrac >= 0 ? Math.round(e.wlFrac * 100) + "%" : "--", lc});
-            l.add(new Object[]{"唤醒闹钟", e.alarmsPerMin >= 0 ? Analyzer.fmt(e.alarmsPerMin) + "/分" : "--", u.fg});
-            l.add(new Object[]{"累计持锁", Ui.dur(e.wlHeldTotalMs), u.fg});
-            l.add(new Object[]{"累计闹钟", e.alarmsTotal + " 次", u.fg});
+            l.add(new Object[]{"Past 2 min Wakelock", e.wlFrac >= 0 ? Math.round(e.wlFrac * 100) + "%" : "--", lc});
+            l.add(new Object[]{"Wakeup Alarms", e.alarmsPerMin >= 0 ? Analyzer.fmt(e.alarmsPerMin) + "/min" : "--", u.fg});
+            l.add(new Object[]{"Total Wakelock", Ui.dur(e.wlHeldTotalMs), u.fg});
+            l.add(new Object[]{"Total Alarms", e.alarmsTotal + " times", u.fg});
             return l;
         }
         if (e.type == Analyzer.LSP) {
-            if (e.measuredCpu >= 0) l.add(new Object[]{"模块代码实测", Analyzer.fmt(e.measuredCpu) + "%", lc});
-            l.add(new Object[]{"宿主进程 CPU", hasAppHost(e) ? Analyzer.fmt(e.scopeCpu) + "%" : "--", u.fg});
+            if (e.measuredCpu >= 0) l.add(new Object[]{"Module Code Measured", Analyzer.fmt(e.measuredCpu) + "%", lc});
+            l.add(new Object[]{"Host Process CPU", hasAppHost(e) ? Analyzer.fmt(e.scopeCpu) + "%" : "--", u.fg});
             l.add(new Object[]{"system_server", e.systemCpu >= 0 ? Analyzer.fmt(e.systemCpu) + "%" : "--", u.dim});
-            l.add(new Object[]{"模块应用自身", e.pids.isEmpty() ? "未运行" : Analyzer.fmt(e.cpuAvg) + "%", u.fg});
+            l.add(new Object[]{"Module App Itself", e.pids.isEmpty() ? "Not running" : Analyzer.fmt(e.cpuAvg) + "%", u.fg});
             return l;
         }
         if (e.type == Analyzer.KSU && e.measuredCpu >= 0) {
-            l.add(new Object[]{"注入代码实测", Analyzer.fmt(e.measuredCpu) + "%", lc});
+            l.add(new Object[]{"Injected Code Measured", Analyzer.fmt(e.measuredCpu) + "%", lc});
             if (e.pids.isEmpty()) {
-                // 只有注入代码、没有自己进程的模块（如 Zygisk 模块），进程相关的数据块没有意义
-                l.add(new Object[]{"模块自身进程", "未运行", u.fg});
+                // Modules with injected code only and no process of their own (e.g. Zygisk modules): process tiles are not meaningful
+                l.add(new Object[]{"Module Own Process", "Not running", u.fg});
                 return l;
             }
         }
         boolean ownCpuFlagged = e.type != Analyzer.KSU || e.cpuAvg >= 5;
-        l.add(new Object[]{e.type == Analyzer.KSU ? "模块进程 CPU" : "CPU（15秒均值）", Analyzer.fmt(e.cpuAvg) + "%",
+        l.add(new Object[]{e.type == Analyzer.KSU ? "Module Process CPU" : "CPU (15s Avg)", Analyzer.fmt(e.cpuAvg) + "%",
                 ownCpuFlagged ? lc : u.fg});
-        l.add(new Object[]{"估算功耗", e.powerMw > 0 ? e.powerMw + " mW" : "--", u.fg});
-        l.add(new Object[]{"内存", e.rssKb > 0 ? e.rssKb / 1024 + " MB" : "--", u.fg});
-        l.add(new Object[]{"进程数", String.valueOf(e.pids.size()), u.fg});
+        l.add(new Object[]{"Estimated Power", e.powerMw > 0 ? e.powerMw + " mW" : "--", u.fg});
+        l.add(new Object[]{"RAM", e.rssKb > 0 ? e.rssKb / 1024 + " MB" : "--", u.fg});
+        l.add(new Object[]{"Processes", String.valueOf(e.pids.size()), u.fg});
         if (e.type == Analyzer.APP) {
-            l.add(new Object[]{"状态", e.minAdj <= 1000 ? Ui.adjName(e.minAdj) : "--", u.fg});
-            l.add(new Object[]{"持唤醒锁", e.wlFrac >= 0 ? Math.round(e.wlFrac * 100) + "%" : "--", u.fg});
+            l.add(new Object[]{"State", e.minAdj <= 1000 ? Ui.adjName(e.minAdj) : "--", u.fg});
+            l.add(new Object[]{"Held Wakelock", e.wlFrac >= 0 ? Math.round(e.wlFrac * 100) + "%" : "--", u.fg});
         }
         return l;
     }
 
-    /** 每行最多 3 个数据块。 */
+    /** Up to 3 tiles per row. */
     View statGrid(List<Object[]> stats) {
         LinearLayout grid = u.col();
         LinearLayout row = null;
@@ -1006,7 +1006,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
             if (i % 3 > 0) lp.leftMargin = u.dp(8);
             row.addView(u.tile((String) st[0], (String) st[1], (int) st[2]), lp);
         }
-        // 补齐最后一行，保持宽度一致
+        // Fill remaining cells in last row to maintain consistent width
         while (row != null && row.getChildCount() < 3) {
             LinearLayout.LayoutParams lp = Ui.weight(1);
             lp.leftMargin = u.dp(8);
@@ -1027,7 +1027,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
     void confirm(String title, String msg, String okLabel, Runnable ok) {
         new Sheet(this, u).title(title, msg)
                 .action(okLabel, Sheet.DANGER_FILLED, ok)
-                .action("取消", Sheet.NORMAL, null)
+                .action("Cancel", Sheet.NORMAL, null)
                 .show();
     }
 
@@ -1040,14 +1040,14 @@ public class MainActivity extends Activity implements Monitor.Listener {
     private void runAll(List<String> cmds) {
         mon.runAll(cmds, (msgs, allOk) -> {
             String joined = TextUtils.join("\n", msgs);
-            // 短消息用轻提示；多条或较长的错误（如需截图反馈的信息）用面板，不会自动消失
+            // Short messages use snackbar; multiple or longer errors use bottom sheet dialog and won't auto-dismiss
             if (msgs.size() <= 2 && (allOk || (joined.length() < 60 && !joined.contains("\n")))) {
                 snack(joined, allOk);
                 return;
             }
             int okN = 0;
             for (String m : msgs) if (m.startsWith("✓")) okN++;
-            Sheet s = new Sheet(this, u).title("执行结果", "成功 " + okN + " · 失败 " + (msgs.size() - okN));
+            Sheet s = new Sheet(this, u).title("Execution Result", "Success " + okN + " · Failed " + (msgs.size() - okN));
             LinearLayout box = u.col();
             box.setPadding(u.dp(12), u.dp(10), u.dp(12), u.dp(10));
             box.setBackground(Ui.round(u.sunken, u.dp(14)));
@@ -1057,29 +1057,29 @@ public class MainActivity extends Activity implements Monitor.Listener {
                 box.addView(t, Ui.lp(-1, -2, 0, i > 0 ? u.dp(6) : 0, 0, 0));
             }
             s.add(box, Ui.lp(-1, -2, 0, u.dp(14), 0, 0));
-            s.action("好", Sheet.PRIMARY, null).show();
+            s.action("OK", Sheet.PRIMARY, null).show();
         });
     }
 
-    // ------------------------------------------------------------------ 深度分析
+    // ------------------------------------------------------------------ Profiling
 
-    /** LSP 页顶部的自动归因状态说明。 */
+    /** Status description of auto-attribution at top of LSP page. */
     private String profStatusText(Analyzer.Result r) {
-        if (!mon.autoProfEnabled()) return "自动归因已关闭（可在设置中开启）。下面显示的是宿主进程的占用，不是模块自身的开销。";
+        if (!mon.autoProfEnabled()) return "Auto-attribution disabled (can be enabled in Settings). Values shown below represent host process CPU, not the module's own overhead.";
         JSONObject p = r.prof;
-        if (p == null) return "自动归因：正在准备第一轮采样（约 15 秒后出结果）…";
-        if (!p.optBoolean("ok")) return "自动归因不可用，下面显示的是宿主进程的占用。";
+        if (p == null) return "Auto-attribution: Preparing first sampling round (results in ~15s)…";
+        if (!p.optBoolean("ok")) return "Auto-attribution unavailable; values below represent host process usage.";
         long age = Math.max(0, (r.snap.optLong("t") - p.optLong("time")) / 1000);
-        String when = age < 5 ? "刚刚更新" : age + " 秒前更新";
-        if (p.has("idle")) return "自动归因：" + p.optString("idle") + "，暂不采样 · " + when;
+        String when = age < 5 ? "Just updated" : age + "s ago";
+        if (p.has("idle")) return "Auto-attribution: " + p.optString("idle") + ", sampling paused · " + when;
         JSONArray t = p.optJSONArray("targets");
         List<String> names = new ArrayList<>();
         if (t != null) for (int i = 0; i < t.length(); i++) names.add(t.optString(i));
-        return "自动归因：实测采样 " + TextUtils.join("、", names) + " · " + when + " · 每 "
-                + p.optInt("period", 30) + " 秒一次";
+        return "Auto-attribution: Profiling " + TextUtils.join(", ", names) + " · " + when + " · Every "
+                + p.optInt("period", 30) + "s";
     }
 
-    /** {name, valueKey} 列表，数值显示为百分比。 */
+    /** {name, valueKey} list, value displayed as percentage. */
     private View listBox(JSONArray arr, int max, String valueKey) {
         LinearLayout box = u.col();
         box.setPadding(u.dp(12), u.dp(8), u.dp(12), u.dp(8));
@@ -1099,7 +1099,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return box;
     }
 
-    // ------------------------------------------------------------------ 一键清理
+    // ------------------------------------------------------------------ One-Tap Clean
 
     private void confirmClean() {
         if (result == null) return;
@@ -1108,7 +1108,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         List<Entity> targets = Analyzer.cleanTargets(result, includeFg);
         boolean shell = "shell".equals(result.snap.optString("mode"));
         if (targets.isEmpty()) {
-            snack("当前没有检测到异常对象 👍", true);
+            snack("No abnormal entities detected 👍", true);
             return;
         }
         List<String> cmds = new ArrayList<>();
@@ -1118,27 +1118,27 @@ public class MainActivity extends Activity implements Monitor.Listener {
             int actColor;
             switch (e.type) {
                 case Analyzer.APP:
-                    act = "强行停止";
+                    act = "Force Stop";
                     actColor = u.accent;
                     cmds.add("FORCESTOP " + e.pkg + " " + e.user);
                     break;
                 case Analyzer.NATIVE:
                     if (shell) {
-                        act = "跳过";
+                        act = "Skip";
                         actColor = u.dim;
                     } else {
-                        act = "杀死进程";
+                        act = "Kill Process";
                         actColor = u.bad;
                         cmds.addAll(killCmds(e));
                     }
                     break;
                 case Analyzer.KSU:
-                    act = disableModules ? "禁用模块" : "杀死进程";
+                    act = disableModules ? "Disable Module" : "Kill Process";
                     actColor = u.bad;
                     cmds.add(disableModules ? "KSU_DISABLE " + e.ksuId : "KSU_KILL " + e.ksuId);
                     break;
                 default:
-                    act = disableModules ? "禁用模块" : "停止进程";
+                    act = disableModules ? "Disable Module" : "Stop Process";
                     actColor = disableModules ? u.bad : u.accent;
                     cmds.add(disableModules ? "LSP_DISABLE " + e.lspPkg : "FORCESTOP " + e.lspPkg + " 0");
             }
@@ -1163,14 +1163,14 @@ public class MainActivity extends Activity implements Monitor.Listener {
             r.addView(u.chip(act, actColor), Ui.lp(-2, -2, u.dp(8), 0, 0, 0));
             box.addView(r, Ui.lp(-1, -2, 0, box.getChildCount() > 0 ? u.dp(8) : 0, 0, 0));
         }
-        String sub = shell ? "Shizuku 模式无权杀死系统进程，这些对象会被跳过" : "将按下列方式处理检测到的异常对象";
-        Sheet s = new Sheet(this, u).title("清理 " + targets.size() + " 个异常对象", sub);
+        String sub = shell ? "Shizuku mode lacks permission to kill system processes; these will be skipped" : "Detected abnormal entities will be handled as follows";
+        Sheet s = new Sheet(this, u).title("Clean " + targets.size() + (targets.size() == 1 ? " abnormal entity" : " abnormal entities"), sub);
         s.add(box, Ui.lp(-1, -2, 0, u.dp(14), 0, 0));
-        if (!cmds.isEmpty()) s.action("立即清理", Sheet.DANGER_FILLED, () -> runAll(cmds));
-        s.action("取消", Sheet.NORMAL, null).show();
+        if (!cmds.isEmpty()) s.action("Clean Now", Sheet.DANGER_FILLED, () -> runAll(cmds));
+        s.action("Cancel", Sheet.NORMAL, null).show();
     }
 
-    // ------------------------------------------------------------------ 设置
+    // ------------------------------------------------------------------ Settings
 
     private View buildSettingsPage() {
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
@@ -1178,7 +1178,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
         sv.setVerticalScrollBarEnabled(false);
         LinearLayout col = u.col();
         col.setPadding(u.dp(16), u.dp(14), u.dp(16), u.dp(24));
-        col.addView(u.text("设置", 24, u.fg, true));
+        col.addView(u.text("Settings", 24, u.fg, true));
         settingsBody = u.col();
         col.addView(settingsBody, new LinearLayout.LayoutParams(-1, -2));
         sv.addView(col, new ViewGroup.LayoutParams(-1, -2));
@@ -1189,13 +1189,13 @@ public class MainActivity extends Activity implements Monitor.Listener {
         settingsBody.addView(u.sectionTitle(title), Ui.lp(-1, -2, 0, u.dp(20), 0, u.dp(8)));
     }
 
-    /** 重建设置页内容（每次进入设置页时调用）。 */
+    /** Rebuild settings page content (called each time entering Settings). */
     private void fillSettings() {
         LinearLayout s = settingsBody;
         s.removeAllViews();
 
-        settingsSection("工作模式");
-        String conn = "root".equals(connMode) ? "当前已通过 root 连接" : "shell".equals(connMode) ? "当前已通过 Shizuku 连接" : "当前未连接";
+        settingsSection("Working Mode");
+        String conn = "root".equals(connMode) ? "Currently connected via root" : "shell".equals(connMode) ? "Currently connected via Shizuku" : "Currently disconnected";
         List<View[]> opts = new ArrayList<>();
         for (int i = 0; i < Monitor.MODES.length; i++) {
             final String mode = Monitor.MODES[i];
@@ -1229,53 +1229,51 @@ public class MainActivity extends Activity implements Monitor.Listener {
                 if (m.equals(prefs.getString("work_mode", "auto"))) return;
                 prefs.edit().putString("work_mode", m).apply();
                 paint.run();
-                mon.reconnect(); // 关闭当前会话，按新模式重连
-                snack("已切换为「" + MODE_NAMES[java.util.Arrays.asList(Monitor.MODES).indexOf(m)] + "」，正在重新连接…", true);
+                mon.reconnect(); // Close current session and reconnect under new mode
+                snack("Switched to \"" + MODE_NAMES[java.util.Arrays.asList(Monitor.MODES).indexOf(m)] + "\", reconnecting...", true);
             });
         }
         paint.run();
         s.addView(u.text(conn, 12, u.dim, false), Ui.lp(-1, -2, u.dp(4), u.dp(8), 0, 0));
 
-        settingsSection("耗电统计");
-        s.addView(switchRow("后台监测耗电异常",
-                "约每小时读取一次系统耗电统计（不唤醒手机、不常驻后台），发现应用长时间后台持锁、频繁唤醒、"
-                        + "待机掉电过快等严重异常时发通知（需要 root）",
+        settingsSection("Battery Stats");
+        s.addView(switchRow("Background battery drain monitoring",
+                "Read system battery stats approx. once per hour (does not wake device, not persistent in background); send notification when severe anomalies like long background wakelock, frequent alarms, or rapid standby drain occur (root required)",
                 DrainWatcher.enabled(this), on -> DrainWatcher.setEnabled(this, on)));
 
-        settingsSection("LSP 模块");
-        s.addView(switchRow("自动归因模块占用（root）",
-                "用系统自带的 simpleperf 每 30 秒低频采样一次注入模块的进程，按调用栈算出每个模块实际消耗的 CPU；"
-                        + "会额外占用少量 CPU，只在界面或悬浮窗开启时运行",
+        settingsSection("LSP Modules");
+        s.addView(switchRow("Auto-attribute module CPU (root)",
+                "Use system built-in simpleperf to sample injected processes every 30s at low frequency, calculating CPU used by each module from call stacks; uses minimal extra CPU, runs only when UI or overlay is active",
                 mon.autoProfEnabled(), on -> mon.setAutoProf(on)));
 
-        settingsSection("一键清理");
-        s.addView(switchRow("同时处理前台应用", "默认只处理后台的异常应用",
+        settingsSection("One-Tap Clean");
+        s.addView(switchRow("Include foreground apps", "By default only background abnormal apps are handled",
                 prefs.getBoolean("clean_foreground", false),
                 on -> prefs.edit().putBoolean("clean_foreground", on).apply()));
-        s.addView(switchRow("直接禁用异常的 KSU / LSP 模块", "关闭时只杀死模块进程；禁用需重启手机才能完全生效",
+        s.addView(switchRow("Directly disable abnormal KSU / LSP modules", "When disabled, only module processes are killed; disabling requires a phone reboot to take full effect",
                 prefs.getBoolean("clean_disable_modules", false),
                 on -> prefs.edit().putBoolean("clean_disable_modules", on).apply()), Ui.lp(-1, -2, 0, u.dp(8), 0, 0));
 
-        settingsSection("判定规则");
-        s.addView(u.note("实时（单核 CPU%，约 15 秒平均）\n"
-                + "· 任意应用 ≥35%；后台 ≥10%；缓存进程 ≥3%\n"
-                + "· KSU 模块进程合计 ≥5%；其他 native 进程 ≥20%\n"
-                + "· 后台持唤醒锁 ≥50% 时间，或唤醒闹钟 ≥6 次/分\n"
-                + "· LSP 模块：自身后台 ≥8%；作用域内有异常应用时提示嫌疑\n\n"
-                + "长时（自上次充满电，放电 ≥30 分钟后判定）\n"
-                + "· 后台持锁 ≥20 分钟且占放电时长 ≥15%\n"
-                + "· 唤醒闹钟 ≥30 次/小时；后台定位 ≥2 小时\n"
-                + "· CPU 时间超过前台时长 90 分钟以上\n"
-                + "· 前台 <15 分钟却占应用总耗电 ≥8%\n"
-                + "· 熄屏待机 ≥3%/小时；熄屏唤醒占比 ≥40%", u.dim));
+        settingsSection("Detection Rules");
+        s.addView(u.note("Real-Time (Single-core CPU %, ~15s average)\n"
+                + "· Any app ≥35%; Background ≥10%; Cached process ≥3%\n"
+                + "· KSU module processes combined ≥5%; other native processes ≥20%\n"
+                + "· Background held wakelock ≥50% of time, or wakeup alarms ≥6 times/min\n"
+                + "· LSP module: Self background ≥8%; flagged suspicious when abnormal apps exist in scope\n\n"
+                + "Long-Term (Since last full charge, evaluated after discharging ≥30 min)\n"
+                + "· Background wakelock ≥20 min and ≥15% of discharge time\n"
+                + "· Wakeup alarms ≥30 times/hour; Background location ≥2 hours\n"
+                + "· CPU time exceeds foreground duration by over 90 minutes\n"
+                + "· Foreground <15 min yet accounts for ≥8% of total app battery drain\n"
+                + "· Screen-off standby ≥3%/hour; Screen-off awake ratio ≥40%", u.dim));
 
-        settingsSection("系统");
-        TextView reboot = u.text("重启手机", 15, u.bad, true);
+        settingsSection("System");
+        TextView reboot = u.text("Reboot Phone", 15, u.bad, true);
         reboot.setGravity(Gravity.CENTER);
         reboot.setPadding(0, u.dp(13), 0, u.dp(13));
         reboot.setBackground(u.ripple(Ui.round(Ui.tint(u.bad), u.dp(16))));
-        reboot.setOnClickListener(v -> confirm("立即重启手机？",
-                "模块禁用需要重启才能完全生效。", "重启", () -> run("REBOOT")));
+        reboot.setOnClickListener(v -> confirm("Reboot phone now?",
+                "Module disabling requires a reboot to take full effect.", "Reboot", () -> run("REBOOT")));
         s.addView(reboot);
 
         String ver = "";
@@ -1283,13 +1281,13 @@ public class MainActivity extends Activity implements Monitor.Listener {
             ver = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Exception ignored) {
         }
-        TextView about = u.text("热源猎手 " + ver + "\n所有数据只在本机处理，不联网", 12, u.dim, false);
+        TextView about = u.text("ThermalHunter " + ver + "\nAll data is processed on-device, no network access", 12, u.dim, false);
         about.setGravity(Gravity.CENTER);
         about.setLineSpacing(u.dp(2), 1f);
         s.addView(about, Ui.lp(-1, -2, 0, u.dp(24), 0, 0));
     }
 
-    /** 单选指示器：选中为实心圆点 + 外环。 */
+    /** Radio indicator: filled dot + outer ring when selected. */
     private android.graphics.drawable.Drawable radio(boolean sel) {
         GradientDrawable ring = new GradientDrawable();
         ring.setShape(GradientDrawable.OVAL);
@@ -1326,97 +1324,97 @@ public class MainActivity extends Activity implements Monitor.Listener {
         return r;
     }
 
-    // ------------------------------------------------------------------ 刷新率
+    // ------------------------------------------------------------------ Refresh Rate
 
     private void openRefreshSheet() {
-        snack("正在读取刷新率…", true);
+        snack("Reading refresh rates…", true);
         mon.call("REFRESH_INFO", r -> {
             ui.removeCallbacks(hideSnack);
             snack.setVisibility(View.GONE);
             JSONArray rates = r.optJSONArray("rates");
             if (!r.optBoolean("ok") || rates == null || rates.length() == 0) {
-                snack("读取不到支持的刷新率" + (r.has("error") ? "：" + r.optString("error") : ""), false);
+                snack("Could not read supported refresh rates" + (r.has("error") ? ": " + r.optString("error") : ""), false);
                 return;
             }
             int max = rates.optInt(rates.length() - 1);
             StringBuilder rs = new StringBuilder();
             for (int i = 0; i < rates.length(); i++) rs.append(i > 0 ? "/" : "").append(rates.optInt(i));
-            Sheet s = new Sheet(this, u).title("屏幕刷新率",
-                    "支持 " + rs + "Hz · 当前 " + r.optInt("current", -1) + "Hz。锁定后忽略系统的按应用限频；熄屏后可能需重设。");
+            Sheet s = new Sheet(this, u).title("Screen Refresh Rate",
+                    "Supported " + rs + "Hz · Current " + r.optInt("current", -1) + "Hz. Locking ignores system per-app throttling; may need re-setting after screen turns off.");
             for (int i = rates.length() - 1; i >= 0; i--) {
                 int fps = rates.optInt(i);
-                s.action("锁定 " + fps + "Hz" + (fps == max ? "（最高）" : ""),
+                s.action("Lock " + fps + "Hz" + (fps == max ? " (Highest)" : ""),
                         fps == max ? Sheet.PRIMARY : Sheet.NORMAL, () -> applyRefresh(fps));
             }
-            s.action("交还系统（自动）", Sheet.NORMAL, () -> applyRefresh(0));
-            s.action("取消", Sheet.NORMAL, null);
+            s.action("System Controlled (Auto)", Sheet.NORMAL, () -> applyRefresh(0));
+            s.action("Cancel", Sheet.NORMAL, null);
             s.show();
         });
     }
 
     private void applyRefresh(int fps) {
-        prefs.edit().putInt("lock_fps", fps).apply(); // 记住选择，App 运行时自动保持
+        prefs.edit().putInt("lock_fps", fps).apply(); // Remember choice, maintained automatically while App runs
         toolRefreshDesc.setText(refreshSummary());
         mon.call("REFRESH_SET " + fps, r ->
-                snack(r.optBoolean("ok") ? r.optString("msg") : (r.has("error") ? r.optString("error") : "设置失败"),
+                snack(r.optBoolean("ok") ? r.optString("msg") : (r.has("error") ? r.optString("error") : "Failed to set"),
                         r.optBoolean("ok")));
     }
 
-    // ------------------------------------------------------------------ 加固应用兼容修复
+    // ------------------------------------------------------------------ Hardened App Compatibility Fix
 
     private void openCompatSheet() {
-        snack("正在检测修复状态…", true);
+        snack("Checking fix status…", true);
         CompatFix.query((ok, msg, st) -> {
             snack.setVisibility(View.GONE);
             if (!ok || st == null) {
                 snack(msg, false);
-                toolCompatDesc.setText("需要 root · 点击查看");
+                toolCompatDesc.setText("Root required · Tap to view");
                 return;
             }
-            Sheet s = new Sheet(this, u).title("加固应用兼容修复", st.active
-                    ? "当前：已启用（影子挂载生效，加固应用读到 enforce=0）"
-                    : "当前：未启用");
+            Sheet s = new Sheet(this, u).title("Hardened App Compatibility Fix", st.active
+                    ? "Current: Enabled (Shadow mount active, hardened apps read enforce=0)"
+                    : "Current: Disabled");
             s.add(u.note(
-                    "部分加固应用（如数字人民币）在 root 设备上启动即闪退："
-                            + "加固自检读到 SELinux 为 Enforcing 且检出 root 时会故意崩溃。\n\n"
-                            + "本修复把 /sys/fs/selinux/enforce 用 bind-mount 遮盖为 0，"
-                            + "让加固当作非 Enforcing 环境放行。\n\n"
-                            + "· 真实 SELinux 状态与权限控制完全不变\n"
-                            + "· 即时生效，无需重启手机\n"
-                            + "· 重启 / 软重启后需重新启用\n"
-                            + "· 挂载期间 getenforce 等工具会误显示 Permissive（只读到了影子）\n"
-                            + "· 停用即 umount，一步完整还原", u.dim));
+                    "Some hardened apps (e.g. digital RMB) crash immediately upon launch on rooted devices: "
+                            + "hardened self-checks deliberately crash when reading SELinux as Enforcing and detecting root.\n\n"
+                            + "This fix bind-mounts 0 over /sys/fs/selinux/enforce, "
+                            + "allowing hardened apps to pass as non-Enforcing.\n\n"
+                            + "· Actual SELinux state and permissions remain completely unchanged\n"
+                            + "· Takes effect immediately, no reboot required\n"
+                            + "· Needs to be re-enabled after reboot / soft reboot\n"
+                            + "· While mounted, tools like getenforce will display Permissive (only reading shadow)\n"
+                            + "· Disabling umounts immediately, cleanly restoring in one step", u.dim));
             if (st.active) {
-                s.action("停用（还原真实状态）", Sheet.DANGER, () -> runCompat(false));
-                s.action("完成", Sheet.NORMAL, null);
+                s.action("Disable (Restore Actual State)", Sheet.DANGER, () -> runCompat(false));
+                s.action("Done", Sheet.NORMAL, null);
             } else {
-                s.action("启用修复", Sheet.PRIMARY, () -> runCompat(true));
-                s.action("取消", Sheet.NORMAL, null);
+                s.action("Enable Fix", Sheet.PRIMARY, () -> runCompat(true));
+                s.action("Cancel", Sheet.NORMAL, null);
             }
             s.show();
         });
     }
 
     private void runCompat(boolean enable) {
-        snack(enable ? "正在启用…" : "正在还原…", true);
+        snack(enable ? "Enabling…" : "Restoring…", true);
         CompatFix.set(enable, (ok, msg, st) -> {
             snack(msg, ok);
             if (st != null) toolCompatDesc.setText(CompatFix.desc(st));
-            else toolCompatDesc.setText(ok ? CompatFix.desc(null) : "需要 root · 点击查看");
+            else toolCompatDesc.setText(ok ? CompatFix.desc(null) : "Root required · Tap to view");
         });
     }
 
-    // ------------------------------------------------------------------ VPN 隐身
+    // ------------------------------------------------------------------ VPN Stealth
 
-    /** 本地名单（UI 的事实来源）。旧 MODE_WORLD_READABLE 重定向在 targetSdk 35 上不可靠，弃用。 */
+    /** Local list (source of truth for UI). Old MODE_WORLD_READABLE redirection unreliable on targetSdk 35, deprecated. */
     private SharedPreferences hidePrefs() {
         return getSharedPreferences("hide", MODE_PRIVATE);
     }
 
     /**
-     * 把名单写到 /data/system/thermalhunter/vpnhide.json（system 所有、system_server 可读），
-     * VPN 隐身的唯一依据：system_server 层按名单对目标应用抹掉 VPN 标志，无需逐个配置 LSPosed 作用域。
-     * 旧「私有 prefs 改世界可读」在本机行不通（0660 + SELinux 跨应用隔离），故改走 root 写系统目录。
+     * Write list to /data/system/thermalhunter/vpnhide.json (owned by system, readable by system_server),
+     * the sole source for VPN stealth: system_server strips VPN flag for target apps per this list, no need to configure LSPosed scope per app.
+     * Old "private prefs changed to world readable" does not work on this device (0660 + SELinux isolation), so write to system dir via root.
      */
     private void syncVpnHideConfig() {
         final java.util.Set<String> pkgs = vpnHidePkgs();
@@ -1427,8 +1425,8 @@ public class MainActivity extends Activity implements Monitor.Listener {
                 String b64 = android.util.Base64.encodeToString(
                         arr.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),
                         android.util.Base64.NO_WRAP);
-                // 目录必须归 system 所有：Stats.flush 以 uid 1000 写 stats.json，
-                // 若 fresh install 时本进程(root)先建目录而不 chown，system 写不进 → 归因统计静默失效。
+                // Directory must be owned by system: Stats.flush writes stats.json with uid 1000,
+                // if this process (root) creates directory on fresh install without chown, system cannot write → attribution stats silently fail.
                 String cmd = "mkdir -p /data/system/thermalhunter; "
                         + "chown system:system /data/system/thermalhunter; "
                         + "chmod 700 /data/system/thermalhunter; echo '" + b64
@@ -1447,17 +1445,17 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
     private String vpnHideSummary() {
         int n = vpnHidePkgs().size();
-        return n == 0 ? "尚未选择任何应用" : "已对 " + n + " 个应用启用";
+        return n == 0 ? "No apps selected yet" : "Enabled for " + n + (n == 1 ? " app" : " apps");
     }
 
     private void openVpnHidePicker() {
-        snack("正在读取应用列表…", true);
+        snack("Reading app list…", true);
         new Thread(() -> {
             PackageManager pm = getPackageManager();
             List<ApplicationInfo> apps = new ArrayList<>();
             for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
                 boolean system = (ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-                // 显示第三方应用 + 有图标的已更新系统应用；排除自己
+                // Show third-party apps + updated system apps with icons; exclude self
                 if ("com.thermalhunter".equals(ai.packageName)) continue;
                 if (system && (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) continue;
                 apps.add(ai);
@@ -1474,11 +1472,11 @@ public class MainActivity extends Activity implements Monitor.Listener {
         snack.setVisibility(View.GONE);
         PackageManager pm = getPackageManager();
         java.util.Set<String> working = new java.util.HashSet<>(selected);
-        Sheet s = new Sheet(this, u).title("VPN 隐身", "在这里勾选一次即可，无需再到 LSPosed 里添加作用域");
+        Sheet s = new Sheet(this, u).title("VPN Stealth", "Select once here; no need to configure scope in LSPosed");
 
-        // 固定在顶部的搜索框
+        // Pinned top search box
         EditText search = new EditText(this);
-        search.setHint("搜索应用名或包名");
+        search.setHint("Search app name or package");
         search.setSingleLine(true);
         search.setTextSize(14);
         search.setTextColor(u.fg);
@@ -1523,7 +1521,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
             rows.add(r);
             keys.add((label + " " + pkg).toLowerCase(Locale.ROOT));
         }
-        TextView empty = u.text("没有匹配的应用", 13, u.dim, false);
+        TextView empty = u.text("No matching apps", 13, u.dim, false);
         empty.setPadding(0, u.dp(16), 0, 0);
         empty.setVisibility(View.GONE);
         list.addView(empty);
@@ -1545,29 +1543,29 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
         s.pin(search);
         s.add(list);
-        s.add(u.note("隐身在系统框架层统一完成：勾选后重启该应用即生效。"
-                + "一次性前提：LSPosed 里已启用本模块、作用域包含「系统框架」。"
-                + "局限：不覆盖应用直接读取 tun0 网卡或 native 层的检测。", u.dim),
+        s.add(u.note("Stealth is handled uniformly at the system framework layer: takes effect after toggling and restarting the app."
+                + " One-time prerequisite: Module enabled in LSPosed with 'System Framework' in scope."
+                + " Limitation: Does not cover apps directly reading tun0 interface or native-level checks.", u.dim),
                 Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
-        s.action("保存", Sheet.PRIMARY, () -> {
+        s.action("Save", Sheet.PRIMARY, () -> {
             hidePrefs().edit().putStringSet("vpn_pkgs", working).commit();
             syncVpnHideConfig();
             toolVpnDesc.setText(vpnHideSummary());
-            snack(working.isEmpty() ? "已清空 VPN 隐身列表"
-                    : "已对 " + working.size() + " 个应用启用，重启该应用后生效", true);
+            snack(working.isEmpty() ? "VPN stealth list cleared"
+                    : "Enabled for " + working.size() + " apps, takes effect after restarting the apps", true);
         });
-        s.action("取消", Sheet.NORMAL, null);
+        s.action("Cancel", Sheet.NORMAL, null);
         s.show();
     }
 
-    // ------------------------------------------------------------------ 截图限制解除
+    // ------------------------------------------------------------------ Bypass Screenshot Restrictions
 
-    /** 截图解锁名单的本地存储（UI 事实来源）。 */
+    /** Local storage for screenshot unlock list (UI source of truth). */
     private SharedPreferences shotPrefs() {
         return getSharedPreferences("screenshot", MODE_PRIVATE);
     }
 
-    /** 把名单写到 /data/system/thermalhunter/screenshot.json，system_server 层按名单解除 FLAG_SECURE。 */
+    /** Writes list to /data/system/thermalhunter/screenshot.json; system_server clears FLAG_SECURE per list. */
     private void syncScreenshotConfig() {
         final java.util.Set<String> pkgs = shotPkgs();
         new Thread(() -> {
@@ -1595,11 +1593,11 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
     private String shotSummary() {
         int n = shotPkgs().size();
-        return n == 0 ? "尚未选择任何应用" : "已对 " + n + " 个应用解除";
+        return n == 0 ? "No apps selected yet" : "Bypassed for " + n + (n == 1 ? " app" : " apps");
     }
 
     private void openShotPicker() {
-        snack("正在读取应用列表…", true);
+        snack("Reading app list…", true);
         new Thread(() -> {
             PackageManager pm = getPackageManager();
             List<ApplicationInfo> apps = new ArrayList<>();
@@ -1621,11 +1619,11 @@ public class MainActivity extends Activity implements Monitor.Listener {
         snack.setVisibility(View.GONE);
         PackageManager pm = getPackageManager();
         java.util.Set<String> working = new java.util.HashSet<>(selected);
-        Sheet s = new Sheet(this, u).title("截图限制解除",
-                "勾选需要允许截屏 / 录屏的应用（多为银行、支付类应用设置的 FLAG_SECURE）");
+        Sheet s = new Sheet(this, u).title("Bypass Screenshot Restrictions",
+                "Select apps to allow screenshot / screen recording (mostly FLAG_SECURE set by banking and payment apps)");
 
         EditText search = new EditText(this);
-        search.setHint("搜索应用名或包名");
+        search.setHint("Search app name or package");
         search.setSingleLine(true);
         search.setTextSize(14);
         search.setTextColor(u.fg);
@@ -1670,7 +1668,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
             rows.add(r);
             keys.add((label + " " + pkg).toLowerCase(Locale.ROOT));
         }
-        TextView empty = u.text("没有匹配的应用", 13, u.dim, false);
+        TextView empty = u.text("No matching apps", 13, u.dim, false);
         empty.setPadding(0, u.dp(16), 0, 0);
         empty.setVisibility(View.GONE);
         list.addView(empty);
@@ -1692,22 +1690,22 @@ public class MainActivity extends Activity implements Monitor.Listener {
 
         s.pin(search);
         s.add(list);
-        s.add(u.note("解除在系统框架层统一完成：勾选后重启该应用即可正常截屏 / 录屏。"
-                + "一次性前提：LSPosed 里已启用本模块、作用域包含「系统框架」。"
-                + "注意：解除仅作用于勾选的应用，其他应用的安全标志不受影响。", u.dim),
+        s.add(u.note("Bypass is handled uniformly at the system framework layer: restart the app after selecting to enable screenshots / screen recording."
+                + " One-time prerequisite: Module enabled in LSPosed with 'System Framework' in scope."
+                + " Note: Bypass only affects selected apps; other apps' secure flags remain unaffected.", u.dim),
                 Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
-        s.action("保存", Sheet.PRIMARY, () -> {
+        s.action("Save", Sheet.PRIMARY, () -> {
             shotPrefs().edit().putStringSet("pkgs", working).commit();
             syncScreenshotConfig();
             toolShotDesc.setText(shotSummary());
-            snack(working.isEmpty() ? "已清空截图解除列表"
-                    : "已对 " + working.size() + " 个应用解除，重启该应用后生效", true);
+            snack(working.isEmpty() ? "Screenshot bypass list cleared"
+                    : "Bypassed for " + working.size() + " apps, takes effect after restarting the apps", true);
         });
-        s.action("取消", Sheet.NORMAL, null);
+        s.action("Cancel", Sheet.NORMAL, null);
         s.show();
     }
 
-    // ------------------------------------------------------------------ 悬浮窗
+    // ------------------------------------------------------------------ Floating Overlay
 
     private void toggleFloat() {
         if (FloatService.isRunning()) {
@@ -1716,13 +1714,13 @@ public class MainActivity extends Activity implements Monitor.Listener {
         }
         if (!Settings.canDrawOverlays(this)) {
             pendingFloat = true;
-            snack("请允许「热源猎手」显示在其他应用上层", true);
+            snack("Please grant ThermalHunter \"Display over other apps\" permission", true);
             try {
                 startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                         Uri.parse("package:" + getPackageName())));
             } catch (Throwable t) {
                 pendingFloat = false;
-                snack("无法打开悬浮窗权限设置，请在系统设置中手动允许", false);
+                snack("Unable to open overlay permission settings; please enable manually in system settings", false);
             }
             return;
         }
@@ -1741,10 +1739,10 @@ public class MainActivity extends Activity implements Monitor.Listener {
         boolean on = FloatService.isRunning();
         floatBtn.setColorFilter(on ? Color.WHITE : u.fg);
         floatBtn.setBackground(u.ripple(on ? Ui.round(u.accent, u.dp(21)) : u.card(u.dp(21))));
-        if (toolFloatDesc != null) toolFloatDesc.setText(on ? "已开启 · 点击关闭" : "在任意界面上方显示温度与热源 · 点击开启");
+        if (toolFloatDesc != null) toolFloatDesc.setText(on ? "Enabled · Tap to close" : "Display temperature and heat sources over any app · Tap to open");
     }
 
-    // ------------------------------------------------------------------ 列表
+    // ------------------------------------------------------------------ List
 
     private final class EntityAdapter extends BaseAdapter {
         final List<Entity> items = new ArrayList<>();
@@ -1777,7 +1775,7 @@ public class MainActivity extends Activity implements Monitor.Listener {
                 h = new Holder();
                 LinearLayout row = new LinearLayout(MainActivity.this);
                 row.setPadding(u.dp(14), u.dp(12), u.dp(14), u.dp(12));
-                row.setDuplicateParentStateEnabled(true); // 让卡片水波纹响应列表点击
+                row.setDuplicateParentStateEnabled(true); // Let card ripple respond to list item click
 
                 h.avatar = u.avatar(42);
                 row.addView(h.avatar, Ui.lp(u.dp(42), u.dp(42), 0, 0, u.dp(12), 0));
@@ -1827,40 +1825,40 @@ public class MainActivity extends Activity implements Monitor.Listener {
             String name = u.label(e);
             h.title.setText(name);
             String sub = Ui.typeName(e) + " · " + (e.type == Analyzer.KSU ? e.sub : e.title);
-            if (!e.enabled) sub = "已禁用 · " + sub;
+            if (!e.enabled) sub = "Disabled · " + sub;
             h.sub.setText(sub);
             String m = metrics(e);
             h.metrics.setText(m);
             h.metrics.setVisibility(m.isEmpty() ? View.GONE : View.VISIBLE);
 
-            // 右侧主数值 + 占用条
+            // Right primary value + usage bar
             double frac;
             if (tab == 3) {
                 h.value.setText(e.wlFrac >= 0 ? Math.round(e.wlFrac * 100) + "%" : "--");
-                h.caption.setText("持锁");
+                h.caption.setText("Wakelock");
                 frac = Math.max(0, e.wlFrac);
             } else if (e.type == Analyzer.KSU && e.measuredCpu > 0.05) {
                 double v = e.cpuAvg + e.measuredCpu;
                 h.value.setText(Analyzer.fmt(v) + "%");
-                h.caption.setText("CPU（含注入）");
+                h.caption.setText("CPU (inc. inj)");
                 frac = v / 100;
             } else if (e.type == Analyzer.LSP && e.measuredCpu >= 0) {
                 h.value.setText(Analyzer.fmt(e.measuredCpu) + "%");
-                h.caption.setText("实测 CPU");
+                h.caption.setText("Measured CPU");
                 frac = e.measuredCpu / 100;
             } else if (e.type == Analyzer.LSP) {
-                // 没有实测数据：显示宿主进程的占用并注明
+                // No measured data: show host process usage and note it
                 if (hasAppHost(e)) {
                     h.value.setText(Analyzer.fmt(e.scopeCpu) + "%");
-                    h.caption.setText("宿主进程 CPU");
+                    h.caption.setText("Host Process CPU");
                     frac = e.scopeCpu / 100;
                 } else if (e.injectsSystem && e.systemCpu >= 0) {
                     h.value.setText(Analyzer.fmt(e.systemCpu) + "%");
-                    h.caption.setText("system_server·共用");
+                    h.caption.setText("system_server (shared)");
                     frac = 0;
                 } else {
                     h.value.setText("--");
-                    h.caption.setText("宿主未运行");
+                    h.caption.setText("Host not running");
                     frac = 0;
                 }
             } else {
@@ -1877,14 +1875,14 @@ public class MainActivity extends Activity implements Monitor.Listener {
             for (String r : e.reasons) rs.append(rs.length() > 0 ? "\n" : "").append("❗ ").append(r);
             for (String w : e.warnings) rs.append(rs.length() > 0 ? "\n" : "").append("⚠ ").append(w);
             List<String> tags = new ArrayList<>(e.tags);
-            if (e.isProtected) tags.add("受保护");
+            if (e.isProtected) tags.add("Protected");
             if (!tags.isEmpty()) rs.append(rs.length() > 0 ? "\n" : "").append("🏷 ").append(TextUtils.join(" · ", tags));
             h.reasons.setText(rs);
             h.reasons.setTextColor(e.level == Analyzer.BAD ? u.bad : e.level == Analyzer.WARN ? u.warn : u.dim);
             h.reasons.setVisibility(rs.length() == 0 ? View.GONE : View.VISIBLE);
             if (e.level != Analyzer.OK) {
                 int bc = u.levelColor(e.level);
-                h.badge.setText(e.level == Analyzer.BAD ? "异常" : "可疑");
+                h.badge.setText(e.level == Analyzer.BAD ? "Anomaly" : "Suspicious");
                 h.badge.setTextColor(bc);
                 h.badge.setBackground(Ui.round(Ui.tint(bc), u.dp(10)));
                 h.badge.setVisibility(View.VISIBLE);

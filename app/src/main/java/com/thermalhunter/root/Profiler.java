@@ -20,26 +20,28 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 用系统自带的 simpleperf 对目标进程按 CPU 时间（cpu-clock）采样，再按调用栈把 CPU 分到具体的注入来源：
- * LSPosed 模块（键为包名）、带 Java 代码的 KernelSU / Zygisk 模块（键为 "ksu:模块id"，如 HMA-OSS），
- * LSPosed 框架自身（键为 FRAMEWORK，计入「框架转发」）。
+ * Uses system built-in simpleperf to sample target processes by CPU time (cpu-clock),
+ * and attributes CPU to specific injection sources based on call stacks:
+ * LSPosed modules (key: package name), KernelSU / Zygisk modules with Java code (key: "ksu:moduleId", e.g. HMA-OSS),
+ * LSPosed framework itself (key: FRAMEWORK, counted as "framework bridge").
  *
- * 归属规则（真机验证后的版本）：
- * 1. 只看非系统分区的帧（/system、/apex 等里的代码一律不算模块，避免同名类误判）；
- * 2. 优先采用「强证据」：类名未混淆且只属于一个来源的帧，取离栈顶最近的那个；
- *    混淆过的短类名（如 tk.a、mb）在各模块间经常撞名，甚至与厂商系统代码撞名，只作弱证据；
- * 3. 没有强证据时，用弱证据逐层取交集；仍有多个候选时，参考同一窗口内的统计关联：
- *    某个混淆类若在「已由强证据确定归属」的样本里总与某来源同时出现，就按该来源归属；
- *    还不能确定的才记为「无法区分」。
- * 每个样本的 event_count 就是它代表的 CPU 纳秒数，因此结果直接是各模块消耗的 CPU 时间。
+ * Attribution rules (verified on physical devices):
+ * 1. Only consider non-system partition frames (code in /system, /apex, etc. is never counted as modules to prevent false positives);
+ * 2. Prefer "strong evidence": frames whose class name is unobfuscated and belongs to only one source, picking the one closest to stack top;
+ *    Obfuscated short class names (e.g. tk.a, mb) frequently collide across modules or even OEM system code, serving only as weak evidence;
+ * 3. When no strong evidence exists, intersect weak evidence layer by layer; if multiple candidates remain, resolve using statistical co-occurrence:
+ *    if an obfuscated class always co-occurs with a certain source in strong-evidence samples, attribute it to that source;
+ *    only unresolvable cases are counted as "ambiguous".
+ * Each sample's event_count is the CPU nanoseconds it represents, so the result directly equals CPU time consumed by each module.
  *
- * 局限：hook 导致的间接开销（如被 hook 的方法不能再被内联）无法统计，结果会略微低估模块的影响。
+ * Limitation: Indirect overhead from hooks (e.g. hooked methods can no longer be inlined) cannot be tracked,
+ * slightly underestimating module impact.
  */
 final class Profiler {
     private Profiler() {}
 
     static final String SIMPLEPERF = "/system/bin/simpleperf";
-    /** LSPosed 框架自身代码的来源键（归入「框架转发」）。 */
+    /** Source key for LSPosed framework code (grouped into "Framework Bridge"). */
     static final String FRAMEWORK = "framework";
     private static final String DATA = "/data/local/tmp/thermalhunter_perf.data";
     private static final String TEXT = "/data/local/tmp/thermalhunter_perf.txt";
@@ -47,18 +49,18 @@ final class Profiler {
     private static final String[] BRIDGE_MARKS = {"de.robv.android.xposed.", "io.github.libxposed.", "org.lsposed.",
             "LSPHooker", "lsplant", "LSPlant"};
 
-    /** apk 路径 + 修改时间 → 类名集合，避免每次都重新解析。 */
+    /** apk path + last modified time -> class name set, avoiding re-parsing every time. */
     private static final Map<String, Set<String>> DEX_CACHE = new HashMap<>();
 
-    /** 一个采样窗口的结果。所有数值都是 CPU 纳秒。 */
+    /** Result of one sampling window. All values are CPU nanoseconds. */
     static final class Window {
         long wallNs, samples, javaSamples, totalNs, bridgeNs, ambiguousNs;
         final Map<String, Long> moduleNs = new HashMap<>();
-        final Map<String, Map<String, Long>> moduleProcNs = new HashMap<>();   // 模块 → 进程名 → ns
-        final Map<String, Map<String, Long>> moduleMethodNs = new HashMap<>(); // 模块 → 方法 → ns
-        /** 混淆类 → 与它同栈出现过的强证据来源 → ns（用于第二遍消歧）。 */
+        final Map<String, Map<String, Long>> moduleProcNs = new HashMap<>();   // module -> proc name -> ns
+        final Map<String, Map<String, Long>> moduleMethodNs = new HashMap<>(); // module -> method -> ns
+        /** Obfuscated class -> strong-evidence sources co-occurring on stack -> ns (used for second-pass disambiguation). */
         final Map<String, Map<String, Long>> learned = new HashMap<>();
-        /** 第一遍无法区分的样本，解析结束后再尝试消歧。 */
+        /** Samples ambiguous on first pass; disambiguation attempted after parsing finishes. */
         final List<Pending> pending = new ArrayList<>();
     }
 
@@ -74,11 +76,11 @@ final class Profiler {
     }
 
     /**
-     * 采样一个窗口。
-     * @param targets pid → 进程名
+     * Samples a window.
+     * @param targets pid -> process name
      */
     static Window sample(Map<Integer, String> targets, int seconds, int freq) throws Exception {
-        if (!available()) throw new Exception("系统没有自带 simpleperf（" + SIMPLEPERF + "）");
+        if (!available()) throw new Exception("System lacks built-in simpleperf (" + SIMPLEPERF + ")");
         StringBuilder pids = new StringBuilder();
         for (int pid : targets.keySet()) pids.append(pids.length() > 0 ? "," : "").append(pid);
         new File(DATA).delete();
@@ -88,15 +90,15 @@ final class Profiler {
                 "-f", String.valueOf(freq), "--call-graph", "dwarf,16384",
                 "--duration", String.valueOf(seconds), "-o", DATA);
         if ((int) r[0] != 0 || !new File(DATA).exists()) {
-            // 旧版本可能不支持自定义栈大小，退回默认 DWARF 调用栈
+            // Older versions may not support custom stack size, fall back to default DWARF call graph
             r = Sys.exec(SIMPLEPERF, "record", "-p", pids.toString(), "-e", "cpu-clock",
                     "-f", String.valueOf(freq), "-g", "--duration", String.valueOf(seconds), "-o", DATA);
         }
         long w1 = System.nanoTime();
         if ((int) r[0] != 0 || !new File(DATA).exists()) {
-            throw new Exception("simpleperf 采样失败：" + tail(String.valueOf(r[1])));
+            throw new Exception("simpleperf sampling failed: " + tail(String.valueOf(r[1])));
         }
-        // 线程 → 所属进程（report-sample 只给线程号）
+        // Thread -> parent process (report-sample only gives thread id)
         Map<Integer, String> tidToProc = new HashMap<>();
         for (Map.Entry<Integer, String> t : targets.entrySet()) {
             for (String tid : Sys.list("/proc/" + t.getKey() + "/task")) {
@@ -110,7 +112,7 @@ final class Profiler {
         try {
             Object[] rep = Sys.execToFile(new File(TEXT), SIMPLEPERF, "report-sample", "-i", DATA, "--show-callchain");
             if ((int) rep[0] != 0 || !new File(TEXT).exists()) {
-                throw new Exception("simpleperf 解析失败：" + tail(String.valueOf(rep[1])));
+                throw new Exception("simpleperf parse failed: " + tail(String.valueOf(rep[1])));
             }
             Map<String, Set<String>> classToModules = classMap();
             Window w = new Window();
@@ -123,13 +125,13 @@ final class Profiler {
         }
     }
 
-    /** 所有注入来源的「类名 → 来源键」表。 */
+    /** "Class name -> source key" map for all injection sources. */
     private static Map<String, Set<String>> classMap() {
         Map<String, Set<String>> map = new HashMap<>();
         for (LspModules.Module m : LspModules.get().modules) {
             addClasses(map, moduleClasses(resolveApk(m.pkg, m.apkPath)), m.pkg);
         }
-        // KernelSU 模块自带的 Java 代码（Zygisk 注入，如 HMA-OSS；LSPosed 框架本身）
+        // Java code included in KernelSU modules (Zygisk injection, e.g. HMA-OSS; LSPosed framework itself)
         for (String id : Sys.list(KsuModules.MODULES_DIR)) {
             String key = id.toLowerCase().contains("lsposed") ? FRAMEWORK : "ksu:" + id;
             for (String f : payloads(KsuModules.MODULES_DIR + "/" + id)) addClasses(map, moduleClasses(f), key);
@@ -145,7 +147,7 @@ final class Profiler {
         }
     }
 
-    /** 模块目录（两层以内，不含覆盖进系统分区的 system/ 目录）里的 .dex / .jar / .apk。 */
+    /** .dex / .jar / .apk in module directory (within 2 levels, excluding system/ overlaid to system partitions). */
     private static List<String> payloads(String dir) {
         List<String> out = new ArrayList<>();
         for (String rel : Sys.walk(new File(dir), 200, 1)) {
@@ -155,7 +157,7 @@ final class Profiler {
         return out;
     }
 
-    /** LSPosed 数据库里的 APK 路径在模块更新后可能失效，此时按包名在 /data/app 下重新查找。 */
+    /** APK path in LSPosed database may become invalid after module update; searches under /data/app by package name. */
     static String resolveApk(String pkg, String dbPath) {
         if (dbPath != null && new File(dbPath).exists()) return dbPath;
         for (String a : Sys.list("/data/app")) {
@@ -205,7 +207,7 @@ final class Profiler {
         resolvePending(w);
     }
 
-    /** 第二遍：用强证据样本里学到的「混淆类 → 来源」关联，给无法区分的样本消歧。 */
+    /** Second pass: disambiguate samples using learned "obfuscated class -> source" associations from strong evidence samples. */
     private static void resolvePending(Window w) {
         for (Pending p : w.pending) {
             String best = null;
@@ -264,9 +266,9 @@ final class Profiler {
             if (cls == null || isSystemFile(file)) continue;
             Set<String> mods = classToModules.get(cls);
             if (mods == null) continue;
-            if (hit == null) hit = methodOf(sym); // 离栈顶最近的注入代码方法
+            if (hit == null) hit = methodOf(sym); // Injected code method closest to top of stack
             if (mods.size() == 1 && !obfuscated(cls)) {
-                // 强证据：未混淆且唯一，采用离栈顶最近的一个（继续扫描以收集弱证据用于学习）
+                // Strong evidence: unobfuscated and unique, take closest to stack top (continue scan to collect weak evidence for learning)
                 if (strong == null) strong = mods.iterator().next();
                 continue;
             }
@@ -281,7 +283,7 @@ final class Profiler {
         }
         if (java) w.javaSamples++;
         if (strong != null) {
-            // 学习：这些混淆类与该来源同栈出现
+            // Learning: these obfuscated classes co-occurred on stack with this source
             for (String cls : weak) inc(sub(w.learned, cls), strong, ns);
             credit(w, strong, proc, hit, ns);
         } else if (cand != null && cand.size() == 1) {
@@ -305,7 +307,7 @@ final class Profiler {
         return s;
     }
 
-    /** 混淆后的类名：顶层类名与各级包名都不超过 3 个字符，如 tk.a、mb、fo$Transformer。 */
+    /** Obfuscated class name: top-level class name and all package segments are <= 3 characters, e.g. tk.a, mb, fo$Transformer. */
     static boolean obfuscated(String cls) {
         String top = cls;
         int d = top.indexOf('$');
@@ -325,7 +327,7 @@ final class Profiler {
         return false;
     }
 
-    /** "void com.foo.Bar.baz(int)" / "com.foo.Bar.baz" → "com.foo.Bar.baz"；不像 Java 方法时返回 null。 */
+    /** "void com.foo.Bar.baz(int)" / "com.foo.Bar.baz" -> "com.foo.Bar.baz"; returns null if not like a Java method. */
     static String methodOf(String sym) {
         int p = sym.indexOf('(');
         String s = p >= 0 ? sym.substring(0, p) : sym;
@@ -341,9 +343,9 @@ final class Profiler {
         return dot > 0 ? m.substring(0, dot) : null;
     }
 
-    // ------------------------------------------------------------------ dex 类名
+    // ------------------------------------------------------------------ dex class names
 
-    /** 读取 APK 内所有 classesN.dex 的类名（Java 形式，如 com.foo.Bar$1）。 */
+    /** Reads class names from all classesN.dex in APK (Java format, e.g. com.foo.Bar$1). */
     static Set<String> moduleClasses(String apk) {
         if (apk == null || apk.isEmpty()) return Collections.emptySet();
         File f = new File(apk);
@@ -388,7 +390,7 @@ final class Profiler {
         return bos.toByteArray();
     }
 
-    /** 只解析 header → class_defs → type_ids → string_ids，取出每个类的描述符。 */
+    /** Only parses header -> class_defs -> type_ids -> string_ids, extracting descriptor for each class. */
     private static void parseDex(byte[] d, Set<String> out) {
         if (d.length < 0x70 || d[0] != 'd' || d[1] != 'e' || d[2] != 'x') return;
         ByteBuffer b = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN);
@@ -400,7 +402,7 @@ final class Profiler {
                 int typeIdx = b.getInt(classDefsOff + i * 32);
                 int strIdx = b.getInt(typeIdsOff + typeIdx * 4);
                 int off = b.getInt(stringIdsOff + strIdx * 4);
-                while ((d[off] & 0x80) != 0) off++; // 跳过 uleb128（UTF-16 长度）
+                while ((d[off] & 0x80) != 0) off++; // Skip uleb128 (UTF-16 length)
                 off++;
                 int end = off;
                 while (end < d.length && d[end] != 0) end++;
@@ -413,7 +415,7 @@ final class Profiler {
         }
     }
 
-    // ------------------------------------------------------------------ 工具
+    // ------------------------------------------------------------------ Utilities
 
     private static long parseLong(String s) {
         try {

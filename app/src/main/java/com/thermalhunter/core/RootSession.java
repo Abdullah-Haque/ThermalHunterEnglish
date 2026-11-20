@@ -14,12 +14,13 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 通过 su（root 模式）或 Shizuku（ADB 模式，shell 身份）启动常驻进程（app_process 运行本 APK 内的 RootMain），
- * 后续所有采集/操作都通过 stdin/stdout 的行协议完成，避免每次都 fork shell。
- * 所有调用都必须在后台线程。
+ * Launches a daemon process (running RootMain in this APK via app_process) via su (root mode)
+ * or Shizuku (ADB mode, shell identity). All subsequent collections/actions are performed over
+ * a stdin/stdout line protocol, avoiding repeatedly forking shells.
+ * All calls must run on a background thread.
  */
 public final class RootSession {
-    /** 单次请求（含启动握手）的最长等待；超时后中止会话并强杀后台进程，避免 monitor 线程永久阻塞。 */
+    /** Maximum wait time for a single request (including startup handshake); aborts session and forcibly kills background process on timeout to avoid blocking monitor thread permanently. */
     private static final long CALL_TIMEOUT_MS = 30_000;
 
     private Process process;
@@ -34,7 +35,7 @@ public final class RootSession {
             try {
                 return ((ShizukuRemoteProcess) process).alive();
             } catch (RuntimeException e) {
-                return false; // Shizuku 服务已断开
+                return false; // Shizuku service disconnected
             }
         }
         try {
@@ -45,7 +46,7 @@ public final class RootSession {
         }
     }
 
-    /** 当前会话是否通过 Shizuku（shell 权限）建立。 */
+    /** Whether the current session was established via Shizuku (shell permissions). */
     public boolean isShizuku() {
         return viaShizuku;
     }
@@ -54,7 +55,7 @@ public final class RootSession {
         return lastError;
     }
 
-    /** @param shizuku true 时通过 Shizuku 以 shell 身份启动，否则通过 su 以 root 启动 */
+    /** @param shizuku true to start as shell via Shizuku, false to start as root via su */
     public synchronized boolean start(Context ctx, boolean shizuku) {
         close();
         viaShizuku = shizuku;
@@ -84,19 +85,19 @@ public final class RootSession {
             while ((line = readLineTimeout(deadline)) != null) {
                 if (line.equals("@@READY")) return true;
             }
-            if (lastError.isEmpty()) lastError = shizuku ? "后台进程没有启动"
-                    : "su 被拒绝或不可用（请在 KernelSU 管理器中授予本应用超级用户权限）";
+            if (lastError.isEmpty()) lastError = shizuku ? "Background process did not start"
+                    : "su was rejected or unavailable (please grant Superuser permission to this app in KernelSU Manager)";
             close();
             return false;
         } catch (IOException e) {
-            lastError = (shizuku ? "无法通过 Shizuku 启动: " : "无法执行 su: ") + e.getMessage();
+            lastError = (shizuku ? "Failed to start via Shizuku: " : "Cannot execute su: ") + e.getMessage();
             close();
             return false;
         }
     }
 
     public synchronized JSONObject call(String cmd) throws IOException {
-        if (writer == null) throw new IOException("root 进程未启动");
+        if (writer == null) throw new IOException("Root process not started");
         writer.write(cmd);
         writer.write('\n');
         writer.flush();
@@ -112,19 +113,20 @@ public final class RootSession {
             }
         }
         close();
-        throw new IOException("root 进程已退出 " + lastError);
+        throw new IOException("Root process has exited " + lastError);
     }
 
     /**
-     * 带超时地读一行。用轮询而非阻塞 read：后台进程卡死后强杀父进程也不一定能拿到 EOF
-     * （子进程可能仍持有 stdout 管道），必须让调用线程自己能退出。
-     * 超时则中止会话并返回 null；正常 EOF 也返回 null，由 lastError 区分。
+     * Reads a line with timeout. Uses polling instead of blocking read: when the background process freezes,
+     * forcibly killing the parent might not produce EOF (child process may still hold stdout pipe),
+     * so the calling thread must be able to exit on its own.
+     * Returns null and aborts session on timeout; normal EOF also returns null, distinguished by lastError.
      */
     private String readLineTimeout(long deadline) throws IOException {
         while (true) {
             if (reader.ready()) return reader.readLine();
-            // ready() 在 EOF 上恒为 false（EOF 不算"就绪"）。进程已退出时直接 readLine
-            // 立即取 EOF/残余数据，保留真实错误原因（如 su 拒绝），避免空转到超时。
+            // ready() is always false on EOF (EOF does not count as "ready"). If process has exited, call readLine
+            // directly to retrieve EOF/residual data immediately, preserving actual error cause (e.g. su rejection) without idling until timeout.
             if (!isAlive()) return reader.readLine();
             if (System.currentTimeMillis() > deadline) {
                 abortTimeout();
@@ -134,14 +136,14 @@ public final class RootSession {
                 Thread.sleep(50);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new IOException("读取被中断", e);
+                throw new IOException("Read interrupted", e);
             }
         }
     }
 
-    /** 超时中止：close 关闭 stdin 后孤儿 app_process 会自行退出，再强杀确保清理。 */
+    /** Timeout abort: orphaned app_process exits automatically after close closes stdin; force-kills afterwards to ensure cleanup. */
     private void abortTimeout() {
-        lastError = "后台进程超过 " + CALL_TIMEOUT_MS / 1000 + " 秒没有响应，已强制结束";
+        lastError = "Background process timed out after " + CALL_TIMEOUT_MS / 1000 + " seconds without response, forcibly terminated";
         Process p = process;
         close();
         if (p != null) {
@@ -152,7 +154,7 @@ public final class RootSession {
         }
     }
 
-    /** 调用并把异常转成 {ok:false} */
+    /** Calls and wraps exceptions into {ok:false} */
     public JSONObject safeCall(String cmd) {
         try {
             return call(cmd);

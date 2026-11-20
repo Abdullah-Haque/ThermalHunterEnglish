@@ -1,4 +1,4 @@
-// 仅编译期使用的 Xposed API 桩（运行时由 LSPosed 提供），不会打包进 APK
+// Xposed API stub used only at compile time (provided by LSPosed at runtime); will not be packaged into APK
 plugins { id 'java-library' }
 java { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }
 

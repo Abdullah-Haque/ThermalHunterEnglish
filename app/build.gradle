@@ -12,7 +12,7 @@ android {
         versionName '1.3.0'
     }
 
-    // 固定签名：从环境变量或 keystore.properties 读取；都没有时回退到 debug 签名
+    // Fixed signature: Read from environment variables or keystore.properties; fall back to debug signature if neither exists
     def ksProps = new Properties()
     def ksPropsFile = rootProject.file('keystore.properties')
     if (ksPropsFile.exists()) ksPropsFile.withInputStream { ksProps.load(it) }
@@ -32,7 +32,7 @@ android {
 
     buildTypes {
         release {
-            // 不要混淆：LSPosed 通过类名加载入口，root 端通过 app_process 反射启动
+            // Do not obfuscate: LSPosed loads entry points by class name, root side starts via app_process reflection
             minifyEnabled false
             signingConfig ksFile ? signingConfigs.release : signingConfigs.debug
         }
@@ -41,7 +41,7 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    // 排除依赖携带的杂项 META-INF，但保留我们自己的 META-INF/xposed（libxposed 新式模块声明）
+    // Exclude miscellaneous META-INF from dependencies, but keep our own META-INF/xposed (modern libxposed module declaration)
     packagingOptions {
         resources.excludes += [
                 'META-INF/AL2.0', 'META-INF/LGPL2.1',
@@ -56,9 +56,9 @@ android {
 
 dependencies {
     compileOnly project(':xposed-stub')
-    // 新 libxposed API：LSPosed 2.x 识别新式模块（META-INF/xposed/），消除 legacy「已弃用」警告
+    // Modern libxposed API: LSPosed 2.x identifies modern modules (META-INF/xposed/), eliminating legacy "deprecated" warnings
     compileOnly 'io.github.libxposed:api:101.0.1'
-    // Shizuku：无 root 时通过无线调试（ADB）以 shell 身份运行采集进程
+    // Shizuku: Runs collection daemon as shell via wireless debugging (ADB) without root
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'
 }

@@ -23,17 +23,17 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * LSPosed 入口。
- * 作用域：
- *   - android (system_server)：统计每个应用的 PARTIAL 唤醒锁持有时长与唤醒型闹钟次数，
- *     周期性写入 /data/system/thermalhunter/stats.json，由 root 端读取。
- *   - com.thermalhunter：让 App 知道模块已被 LSPosed 激活。
+ * LSPosed entry point.
+ * Scope:
+ *   - android (system_server): Tracks each app's PARTIAL wakelock duration and wakeup alarm count,
+ *     periodically written to /data/system/thermalhunter/stats.json and read by root daemon.
+ *   - com.thermalhunter: Notifies App that the module has been activated by LSPosed.
  *
- * VPN / 代理隐身只在 system_server 层实现：按 /data/system/thermalhunter/vpnhide.json 名单，
- * 把交给目标应用的 NetworkCapabilities 抹掉 VPN 标志，并隐藏默认代理 / LinkProperties 里的 HttpProxy。
- * 用户只需在 App 里勾选一次，无需再到 LSPosed 里给每个应用加作用域。
+ * VPN / proxy stealth implemented only at system_server layer: Based on /data/system/thermalhunter/vpnhide.json,
+ * strips VPN flags from NetworkCapabilities delivered to target apps, and hides default proxy / HttpProxy in LinkProperties.
+ * Users only need to check options in App once, without adding scopes in LSPosed for each app.
  *
- * 原则：任何异常都吞掉，绝不能让 system_server 崩溃。
+ * Principle: Swallows all exceptions; never let system_server crash.
  */
 public class HookEntry implements IXposedHookLoadPackage {
 
@@ -49,9 +49,9 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * 安装入口（legacy 入口与新 libxposed 入口 ThermalHunterModule 共用）。
-     * 新入口的存在只为消除 LSPosed 2.x 对 legacy 声明方式的「已弃用」警告；
-     * hook 实现继续走久经实战验证的 XposedBridge/XposedHelpers（LSPosed 2.x 运行时仍完整支持）。
+     * Installation entry point (shared by legacy entry and modern libxposed entry ThermalHunterModule).
+     * The modern entry exists only to eliminate LSPosed 2.x deprecation warnings for legacy declarations;
+     * hook implementation continues using battle-tested XposedBridge/XposedHelpers (fully supported at runtime in LSPosed 2.x).
      */
     static void install(String packageName, ClassLoader cl) {
         if ("com.thermalhunter".equals(packageName)) {
@@ -63,7 +63,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             }
             return;
         }
-        // LSPosed 只会在 system_server 中以 "android" 回调
+        // LSPosed only callbacks with "android" in system_server
         if ("android".equals(packageName)) {
             Stats.start();
             hookWakeLocks(cl);
@@ -72,33 +72,34 @@ public class HookEntry implements IXposedHookLoadPackage {
             hookScreenshotUnlock(cl);
             return;
         }
-        // 其余包（含 system_server 托管的 providers.settings / telecom 等）一律不装 hook：
-        // VPN / 代理隐身统一由上面 system_server 层按名单完成，应用进程内不再注入。
-        // 这样用户只需在 App 里勾选一次，无需逐个配置 LSPosed 作用域。
+        // All other packages (including providers.settings / telecom hosted by system_server) do not install hooks:
+        // VPN / proxy stealth is handled globally at system_server level above based on list, avoiding in-app process injection.
+        // Users only need to check options in App once without configuring per-app LSPosed scopes.
     }
 
-    // ---------------------------------------------------------------- VPN 隐身
+    // ---------------------------------------------------------------- VPN Stealth
 
     private static final int TRANSPORT_VPN = 4;
     private static final int NET_CAPABILITY_NOT_VPN = 15;
 
-    // ---------------------------------------------------------------- system_server 级 VPN 隐身
+    // ---------------------------------------------------------------- system_server Level VPN Stealth
 
-    /** 目标应用的 appId 集合（名单里包名解析出的 uid），周期性刷新。 */
+    /** Target app appId set (uids resolved from package list), periodically refreshed. */
     private static volatile java.util.Set<Integer> sVpnHideAppIds = java.util.Collections.emptySet();
-    // 初值 -30s：开机头 30 秒 elapsedRealtime<30000，若初值 0 会误判「缓存未过期」而返回空名单，
-    // 导致刚开机这段时间 system_server 端 VPN 隐身不生效。
+    // Initial value -30s: elapsedRealtime<30000 in first 30s of boot; if 0, "cache not expired" would be falsely assumed,
+    // returning empty list and causing VPN stealth in system_server to fail during bootup.
     private static volatile long sVpnHideAt = -30_000L;
 
     /**
-     * VPN 隐身总入口。Android 16 的 ConnectivityService 由 tethering mainline 模块的独立
-     * ClassLoader 加载（service-connectivity.jar 不在 SYSTEMSERVERCLASSPATH），lpparam.classLoader
-     * 找不到它；且开机早期 "connectivity" 服务可能尚未注册。故先尝试安装，失败则后台重试。
+     * Main VPN stealth entry. In Android 16, ConnectivityService is loaded by tethering mainline module's
+     * independent ClassLoader (service-connectivity.jar is not in SYSTEMSERVERCLASSPATH), which lpparam.classLoader
+     * cannot find; and during early boot, "connectivity" service may not be registered yet. Attempts installation first,
+     * retrying in background if unsuccessful.
      */
     private static void hookConnectivityHide(ClassLoader cl) {
         if (installConnectivityHooks(cl)) return;
         Thread t = new Thread(() -> {
-            for (int i = 0; i < 24; i++) { // 每 5s 一次，最多 2 分钟
+            for (int i = 0; i < 24; i++) { // Every 5s, up to 2 minutes
                 try {
                     Thread.sleep(5000);
                 } catch (InterruptedException e) {
@@ -112,7 +113,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         t.start();
     }
 
-    /** 解析并安装 NC + 代理两组 hook；ConnectivityService 尚不可用时返回 false。 */
+    /** Resolves and installs NC + proxy hooks; returns false if ConnectivityService is not yet available. */
     private static boolean installConnectivityHooks(ClassLoader cl) {
         Class<?> cs = findConnectivityService(cl);
         if (cs == null) return false;
@@ -122,8 +123,8 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * 找 ConnectivityService 类：先用 system_server 的 ClassLoader；找不到再从
-     * ServiceManager 里 "connectivity" binder 实例拿它真正的（mainline 模块）ClassLoader。
+     * Finds ConnectivityService class: checks system_server's ClassLoader first;
+     * if not found, retrieves its real (mainline module) ClassLoader from "connectivity" binder instance in ServiceManager.
      */
     private static Class<?> findConnectivityService(ClassLoader cl) {
         Class<?> cs = XposedHelpers.findClassIfExists(
@@ -131,7 +132,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         if (cs == null) cs = XposedHelpers.findClassIfExists("com.android.server.ConnectivityService", cl);
         if (cs != null) return cs;
         try {
-            // ServiceManager 是 @hide，反射调用
+            // ServiceManager is @hide, invoked via reflection
             Object b = Class.forName("android.os.ServiceManager")
                     .getMethod("getService", String.class).invoke(null, "connectivity");
             if (b == null) return null;
@@ -147,10 +148,10 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * 在 system_server 里 hook 「按调用方脱敏 NetworkCapabilities」的总闸：
-     * 对隐身名单里的应用，把交给它的 NetworkCapabilities 克隆一份、抹掉 VPN 标志。
-     * 拉取和回调两条路都经过此方法，native 调用方拿到的也是改过的 parcel。
-     * 任何异常都吞掉，绝不能让 system_server 崩。
+     * In system_server, hooks the gateway for "sanitizing NetworkCapabilities per caller":
+     * For apps in stealth list, clones NetworkCapabilities and strips VPN flags.
+     * Both pull and callback paths traverse this method; native callers also receive the sanitized parcel.
+     * Swallows all exceptions; never let system_server crash.
      */
     private static void hookConnectivityVpn(Class<?> cs) {
         try {
@@ -161,10 +162,10 @@ public class HookEntry implements IXposedHookLoadPackage {
                             try {
                                 Object nc = param.getResult();
                                 if (nc == null || param.args.length < 4) return;
-                                // 签名: (NetworkCapabilities, boolean includeLocationSensitiveInfo,
+                                // Signature: (NetworkCapabilities, boolean includeLocationSensitiveInfo,
                                 //        int callingPid, int callingUid, String pkg, String attributionTag)
-                                // callingUid 是 args[3]（args[2] 是 pid）。回调路径也走这里，
-                                // 此时 Binder.getCallingUid() 是 system_server 自己，必须用参数里的 uid。
+                                // callingUid is args[3] (args[2] is pid). Callback path also goes through here,
+                                // where Binder.getCallingUid() is system_server itself, so the parameter uid must be used.
                                 Object uidArg = param.args[3];
                                 if (!(uidArg instanceof Integer)) return;
                                 int appId = ((Integer) uidArg) % 100000; // UserHandle.getAppId
@@ -172,7 +173,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 if (!Boolean.TRUE.equals(XposedHelpers.callMethod(nc, "hasTransport", TRANSPORT_VPN))) {
                                     return;
                                 }
-                                // 克隆后改造，绝不动原对象
+                                // Modify clone, never mutate original object
                                 Object copy = nc.getClass().getConstructor(nc.getClass()).newInstance(nc);
                                 XposedHelpers.callMethod(copy, "removeTransportType", TRANSPORT_VPN);
                                 try {
@@ -181,7 +182,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 }
                                 param.setResult(copy);
                             } catch (Throwable t) {
-                                // 吞掉：绝不影响 system_server
+                                // Swallow: never affect system_server
                             }
                         }
                     });
@@ -192,16 +193,16 @@ public class HookEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * VPN 的 LinkProperties 可能带 HttpProxy（VPN 应用设置的分流代理）。应用经
-     * ConnectivityManager.getDefaultProxy() 拿到它——该 API 在本版本实际走 binder
-     * getProxyForNetwork(Network)（getDefaultProxy 已不在 ConnectivityService 上）。
-     * NetworkCapabilities 总闸拦不到这条路，故按调用方 uid 补一层：
+     * LinkProperties of VPN may contain HttpProxy (proxy configured by VPN app). Apps retrieve it
+     * via ConnectivityManager.getDefaultProxy() -- in this version, it actually goes through binder
+     * getProxyForNetwork(Network) (getDefaultProxy is no longer on ConnectivityService).
+     * The NetworkCapabilities gateway does not intercept this path, so we add hooks by caller uid:
      *   - getProxyForNetwork -> null
-     *   - getLinkProperties / linkPropertiesRestrictedForCallerPermissions -> 克隆后抹掉 HttpProxy
-     *     （后者是拉取 + NetworkCallback 回调两条路的共同出口，用参数里的 uid 区分）
-     *   - 旧 API getNetworkInfo / getActiveNetworkInfo / getAllNetworkInfo 里的 VPN(17) -> WIFI(0)
-     * binder 入口用 Binder.getCallingUid() 区分调用方；system_server 内部调用（uid 1000）
-     * 不在名单里，不受影响。任何异常都吞掉。
+     *   - getLinkProperties / linkPropertiesRestrictedForCallerPermissions -> clones and removes HttpProxy
+     *     (the latter is the common exit for pull + NetworkCallback paths, distinguished by uid parameter)
+     *   - Legacy APIs getNetworkInfo / getActiveNetworkInfo / getAllNetworkInfo: VPN(17) -> WIFI(0)
+     * Binder entry uses Binder.getCallingUid() to identify caller; internal system_server calls (uid 1000)
+     * are not in list and remain unaffected. All exceptions are swallowed.
      */
     private static void hookProxyHide(Class<?> cs) {
         try {
@@ -220,7 +221,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + "proxy-hide getProxyForNetwork failed: " + t);
         }
-        // LinkProperties 拉取路径（binder getLinkProperties）
+        // LinkProperties pull path (binder getLinkProperties)
         try {
             java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(cs, "getLinkProperties",
                     new XC_MethodHook() {
@@ -232,7 +233,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 int appId = android.os.Binder.getCallingUid() % 100000;
                                 if (!vpnHideAppIds().contains(appId)) return;
                                 if (XposedHelpers.callMethod(lp, "getHttpProxy") == null) return;
-                                // 克隆后改造，绝不动原对象
+                                // Modify clone, never mutate original object
                                 Object copy = lp.getClass().getConstructor(lp.getClass()).newInstance(lp);
                                 XposedHelpers.callMethod(copy, "setHttpProxy", new Object[]{null});
                                 param.setResult(copy);
@@ -244,9 +245,9 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + "proxy-hide getLinkProperties failed: " + t);
         }
-        // LinkProperties 回调路径：callCallbackForRequest 经此方法把 LP 交给 NetworkCallback，
-        // 此时 Binder.getCallingUid() 是 system_server 自己，必须用参数里的 uid（args[2]）。
-        // 签名: (LinkProperties, int callerPid, int callerUid)。拉取路径也会经过这里（幂等）。
+        // LinkProperties callback path: callCallbackForRequest delivers LP to NetworkCallback through this method,
+        // where Binder.getCallingUid() is system_server itself, so uid in arguments (args[2]) must be used.
+        // Signature: (LinkProperties, int callerPid, int callerUid). Pull path also passes through here (idempotent).
         try {
             java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(cs,
                     "linkPropertiesRestrictedForCallerPermissions",
@@ -272,7 +273,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + "proxy-hide linkPropertiesRestricted failed: " + t);
         }
-        // 旧 API：NetworkInfo.getType() == TYPE_VPN(17) 也算 VPN，统一改成 WIFI(0)
+        // Legacy APIs: NetworkInfo.getType() == TYPE_VPN(17) also counts as VPN, changed uniformly to WIFI(0)
         XC_MethodHook niHook = new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
@@ -300,19 +301,19 @@ public class HookEntry implements IXposedHookLoadPackage {
         }
     }
 
-    /** VPN 类型的 NetworkInfo 换成 WIFI，其余原样返回。 */
+    /** Replaces VPN-type NetworkInfo with WIFI, returns others as-is. */
     private static android.net.NetworkInfo sanitizeNetworkInfo(android.net.NetworkInfo ni) {
         if (ni == null || ni.getType() != android.net.ConnectivityManager.TYPE_VPN) return ni;
         android.net.NetworkInfo fake = new android.net.NetworkInfo(
                 android.net.ConnectivityManager.TYPE_WIFI, 0, "WIFI", "");
-        // getDetailedState/setDetailedState 是 @hide，走反射避免 hidden API 限制
+        // getDetailedState/setDetailedState is @hide, invoked via reflection to bypass hidden API restrictions
         XposedHelpers.callMethod(fake, "setDetailedState",
                 XposedHelpers.callMethod(ni, "getDetailedState"), null, ni.getExtraInfo());
         return fake;
     }
 
-    /** 隐身名单：读 root 端写入的 /data/system/thermalhunter/vpnhide.json（字符串 JSON 数组）。
-     *  该目录归 system 所有，system_server 可读。名单由 App 通过 root 写入，改动最迟 30 秒生效。 */
+    /** Stealth list: reads /data/system/thermalhunter/vpnhide.json written by root daemon (JSON string array).
+     *  Directory owned by system, readable by system_server. Written by App via root; changes take effect within 30s. */
     private static java.util.Set<String> vpnHidePkgs() {
         java.util.Set<String> pkgs = new java.util.HashSet<>();
         try {
@@ -333,7 +334,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         return pkgs;
     }
 
-    /** 名单包名 → appId 集合；每 30 秒刷新一次。读 root 写入的名单 + /data/system/packages.list。 */
+    /** Package list -> appId set; refreshed every 30s. Reads root-written list + /data/system/packages.list. */
     private static java.util.Set<Integer> vpnHideAppIds() {
         long now = SystemClock.elapsedRealtime();
         if (now - sVpnHideAt < 30_000) return sVpnHideAppIds;
@@ -364,16 +365,16 @@ public class HookEntry implements IXposedHookLoadPackage {
         return ids;
     }
 
-    // ---------------------------------------------------------------- 截图限制解除
+    // ---------------------------------------------------------------- Screenshot Restriction Bypass
 
-    /** 截图解锁名单的 appId 集合（/data/system/thermalhunter/screenshot.json），30 秒缓存。 */
+    /** AppId set for screenshot unlock list (/data/system/thermalhunter/screenshot.json), 30s cache. */
     private static volatile java.util.Set<Integer> sShotAppIds = java.util.Collections.emptySet();
     private static volatile long sShotAt = -30_000L;
 
     /**
-     * system_server 层解除 FLAG_SECURE：WindowState.isSecureLocked() 是 surface 创建时
-     * 打 SECURE 层标志与截屏/录屏安全校验的共同入口。对名单内应用的窗口，把「安全」
-     * 判定改为 false（其余应用不受任何影响）。任何异常都吞掉。
+     * Bypasses FLAG_SECURE at system_server layer: WindowState.isSecureLocked() is the common gateway for marking
+     * SECURE layer flag upon surface creation and security checks for screenshot/screen recording.
+     * For windows belonging to apps in the list, changes "secure" check to false (other apps unaffected). Swallows all exceptions.
      */
     private static void hookScreenshotUnlock(ClassLoader cl) {
         Class<?> ws = XposedHelpers.findClassIfExists("com.android.server.wm.WindowState", cl);
@@ -414,11 +415,11 @@ public class HookEntry implements IXposedHookLoadPackage {
             java.util.Set<XC_MethodHook.Unhook> uh = XposedBridge.hookAllMethods(ws, "isSecure", unlock);
             XposedBridge.log(TAG + "screenshot-unlock isSecure hooks=" + uh.size());
         } catch (Throwable t) {
-            // 个别版本没有 isSecure，忽略
+            // Some versions lack isSecure, ignore
         }
     }
 
-    /** 截图解锁名单：读 root 端写入的 /data/system/thermalhunter/screenshot.json（字符串 JSON 数组）。 */
+    /** Screenshot unlock list: reads /data/system/thermalhunter/screenshot.json written by root daemon (JSON string array). */
     private static java.util.Set<String> shotPkgs() {
         java.util.Set<String> pkgs = new java.util.HashSet<>();
         try {
@@ -439,7 +440,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         return pkgs;
     }
 
-    /** 名单包名 → appId 集合；每 30 秒刷新一次（与 vpnHideAppIds 相同机制）。 */
+    /** Package list -> appId set; refreshed every 30s (same mechanism as vpnHideAppIds). */
     private static java.util.Set<Integer> shotAppIds() {
         long now = SystemClock.elapsedRealtime();
         if (now - sShotAt < 30_000) return sShotAppIds;
@@ -477,7 +478,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             Class<?> pms = XposedHelpers.findClass("com.android.server.power.PowerManagerService", cl);
             // Android 15: acquireWakeLockInternal(IBinder lock, int displayId, int flags, String tag,
             //     String packageName, WorkSource ws, String historyTag, int uid, int pid, IWakeLockCallback cb)
-            // 按类型解析参数，兼容厂商/版本改动。
+            // Parse arguments by type to maintain compatibility across vendor/version changes.
             XposedBridge.hookAllMethods(pms, "acquireWakeLockInternal", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
@@ -492,7 +493,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                                 if (tag == null) tag = (String) a;
                                 else if (pkg == null) pkg = (String) a;
                             } else if (a instanceof Integer && lock != null && tag == null) {
-                                // displayId、flags 都在 tag 之前，flags 是 tag 前的最后一个 int
+                                // displayId and flags are both before tag; flags is the last int before tag
                                 flags = (Integer) a;
                             }
                         }
@@ -517,7 +518,7 @@ public class HookEntry implements IXposedHookLoadPackage {
                     }
                 }
             });
-            // 进程死亡导致的释放
+            // Release triggered by process death
             XposedBridge.hookAllMethods(pms, "handleWakeLockDeath", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
@@ -590,7 +591,7 @@ public class HookEntry implements IXposedHookLoadPackage {
 
         static final class PkgStat {
             long wlCount;
-            long wlHeldMs;   // 已释放部分的累计时长
+            long wlHeldMs;   // Cumulative duration of released portions
             long alarmWakeups;
             String lastTag;
         }
@@ -602,7 +603,7 @@ public class HookEntry implements IXposedHookLoadPackage {
         private static boolean started;
 
         static void start() {
-            // 同一进程可能被回调多次，只启动一次
+            // Same process may be called back multiple times; start only once
             synchronized (LOCK) {
                 if (started) return;
                 started = true;
@@ -632,7 +633,7 @@ public class HookEntry implements IXposedHookLoadPackage {
 
         static void onAcquire(IBinder lock, String pkg, String tag) {
             synchronized (LOCK) {
-                if (HELD.containsKey(lock)) return; // 更新已有锁，不重复计数
+                if (HELD.containsKey(lock)) return; // Updating existing lock, do not double-count
                 HELD.put(lock, new Held(pkg, tag, SystemClock.elapsedRealtime()));
                 PkgStat s = get(pkg);
                 s.wlCount++;
@@ -659,7 +660,7 @@ public class HookEntry implements IXposedHookLoadPackage {
             long now = SystemClock.elapsedRealtime();
             JSONObject pkgs = new JSONObject();
             synchronized (LOCK) {
-                // 清理死掉的 binder（防止漏掉释放导致时长无限增长）
+                // Clean up dead binders (prevent missed releases causing duration to grow unbounded)
                 Iterator<Map.Entry<IBinder, Held>> it = HELD.entrySet().iterator();
                 while (it.hasNext()) {
                     Map.Entry<IBinder, Held> e = it.next();

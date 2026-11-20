@@ -9,8 +9,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 扫描 /data/adb/modules（KernelSU / Magisk / APatch 通用目录结构）。
- * 结果缓存 30 秒；进程归属由 Scanner 根据 exe / cmdline / 覆盖文件 / 父进程链判断。
+ * Scans /data/adb/modules (common directory structure for KernelSU / Magisk / APatch).
+ * Results cached for 30s; process attribution is determined by Scanner based on exe / cmdline / overlaid files / parent process chains.
  */
 final class KsuModules {
     static final String MODULES_DIR = "/data/adb/modules";
@@ -23,7 +23,7 @@ final class KsuModules {
     }
 
     private static List<Module> cache = new ArrayList<>();
-    /** 模块覆盖进系统分区的文件 (/system/bin/xxx) -> 模块 id */
+    /** Module files overlaid into system partitions (/system/bin/xxx) -> module id */
     private static Map<String, String> overlay = new HashMap<>();
     private static long cacheTime;
 
@@ -86,14 +86,14 @@ final class KsuModules {
             m.hasWebroot = new File(base + "/webroot").isDirectory();
             m.hasSepolicy = Sys.exists(base + "/sepolicy.rule");
 
-            // 覆盖文件表 + 温控配置替换检测
+            // Overlay file map + thermal config replacement detection
             for (String part : new String[]{"system", "vendor", "product", "system_ext", "odm"}) {
                 File dir = new File(base, part);
                 if (!dir.isDirectory()) continue;
                 String mountPrefix = part.equals("system") ? "/system" : "/" + part;
                 for (String rel : Sys.walk(dir, 3000, 8)) {
                     String target = mountPrefix + rel;
-                    // 模块 system/vendor/xx 实际挂载到 /vendor/xx
+                    // Module system/vendor/xx actually mounted to /vendor/xx
                     if (target.startsWith("/system/vendor/")) target = target.substring(7);
                     if (target.startsWith("/system/product/")) target = target.substring(7);
                     if (target.startsWith("/system/system_ext/")) target = target.substring(7);
@@ -101,32 +101,32 @@ final class KsuModules {
                     String low = rel.toLowerCase();
                     if (low.contains("thermal") || low.contains("thermal-engine") || low.contains("mtk_thermal")
                             || low.endsWith(".mtc") || low.contains("/thermal/")) {
-                        m.tags.add("替换温控配置");
+                        m.tags.add("Replaces thermal config");
                     }
                     if (low.contains("powerhal") || low.contains("perfmgr") || low.contains("powerscntbl")
                             || low.contains("perf_config") || low.contains("fpsgo")) {
-                        m.tags.add("修改性能/调度配置");
+                        m.tags.add("Modifies performance/scheduler config");
                     }
                 }
             }
-            // 脚本关键字启发式
+            // Script keyword heuristics
             StringBuilder scripts = new StringBuilder();
             for (String s : new String[]{"service.sh", "post-fs-data.sh", "boot-completed.sh", "post-mount.sh", "system.prop"}) {
                 String c = Sys.readAll(base + "/" + s, 256 * 1024);
                 if (c != null) scripts.append(c).append('\n');
             }
             String sc = scripts.toString();
-            if (sc.contains("thermal") || sc.contains("/sys/class/thermal") || sc.contains("thermal_core")) m.tags.add("脚本操作温控");
+            if (sc.contains("thermal") || sc.contains("/sys/class/thermal") || sc.contains("thermal_core")) m.tags.add("Script manipulates thermal");
             if (sc.contains("scaling_min_freq") || sc.contains("scaling_governor") || sc.contains("cpu_boost")
                     || sc.contains("ged_kpi") || sc.contains("/proc/ppm") || sc.contains("cpuset") || sc.contains("uclamp")) {
-                m.tags.add("脚本修改调度/频率");
+                m.tags.add("Script modifies scheduler/frequency");
             }
             if ((sc.contains("while true") || sc.contains("while :") || sc.contains("while [ 1 ]") || sc.contains("until false"))
                     && sc.contains("sleep")) {
-                m.tags.add("常驻循环脚本");
+                m.tags.add("Persistent looping script");
             }
-            if (sc.contains("/sys/power/wake_lock")) m.tags.add("持有内核唤醒锁");
-            if (m.hasZygisk) m.tags.add("Zygisk注入所有应用");
+            if (sc.contains("/sys/power/wake_lock")) m.tags.add("Holds kernel wakelock");
+            if (m.hasZygisk) m.tags.add("Zygisk injected into all apps");
             list.add(m);
         }
         cache = list;

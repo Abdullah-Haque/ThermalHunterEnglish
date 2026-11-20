@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** 采集一次系统快照。CPU 占用按两次快照之间的差值计算（单核百分比，与 top 一致）。 */
+/** Collects one system snapshot. CPU usage calculated as delta between two snapshots (single-core percentage, matching top). */
 final class Scanner {
 
     static final class Proc {
@@ -26,15 +26,15 @@ final class Scanner {
         double cpu;
     }
 
-    /** 进程静态信息缓存（pid+starttime 作为键，避免每次 readlink）。 */
+    /** Process static info cache (pid+starttime as key to avoid readlink every time). */
     private static final class Static {
         long startTime;
         String cmdline, exe;
-        String cwd; // 懒加载，只有 native 进程需要
+        String cwd; // Lazy-loaded, needed only for native processes
         int uid;
     }
 
-    // 内核唤醒源目录有数百项、每项要读 4 个文件，降低刷新频率
+    // Kernel wakeup sources dir has hundreds of entries, each requiring 4 file reads; reduce refresh frequency
     private static final long WAKEUP_REFRESH_MS = 30_000;
     private JSONArray wakeupCache;
     private long wakeupTime;
@@ -52,7 +52,7 @@ final class Scanner {
     private long pkgListTime;
 
     final List<Proc> lastProcs = new ArrayList<>();
-    /** 已完成的扫描轮数；第一轮没有上一轮的 tick，CPU 全为 0。 */
+    /** Completed scan rounds; first round has no previous ticks, CPU is all 0. */
     volatile int scans;
     private JSONObject device;
 
@@ -72,7 +72,7 @@ final class Scanner {
         if (now - pkgListTime < 60_000 && !allPkgs.isEmpty()) return;
         pkgListTime = now;
         String s = Sys.readAll("/data/system/packages.list", 4 << 20);
-        if (s == null) s = pmPackageList(); // shell 身份（Shizuku 模式）读不到 packages.list
+        if (s == null) s = pmPackageList(); // Shell identity (Shizuku mode) cannot read packages.list
         if (s == null) return;
         Map<Integer, List<String>> map = new HashMap<>();
         Set<String> all = new HashSet<>();
@@ -92,7 +92,7 @@ final class Scanner {
         allPkgs = all;
     }
 
-    /** 用 pm 生成与 packages.list 相同的「包名 appId」格式。 */
+    /** Generates same "pkgName appId" format as packages.list using pm. */
     private static String pmPackageList() {
         Object[] r = Sys.execMax(4 << 20, "pm", "list", "packages", "-U");
         if ((int) r[0] != 0) return null;
@@ -121,7 +121,7 @@ final class Scanner {
         out.put("mode", Os.getuid() == 0 ? "root" : "shell");
         out.put("device", device());
 
-        // 总 CPU
+        // Total CPU
         long[] cpu = readCpuTotal();
         long dTotal = 0, dIdle = 0;
         if (cpu != null) {
@@ -170,7 +170,7 @@ final class Scanner {
         d.put("android", Sys.prop("ro.build.version.release"));
         d.put("rom", firstNonEmpty(Sys.prop("ro.vivo.os.build.display.id"), Sys.prop("ro.build.display.id")));
         String kv = Sys.readTrim("/proc/sys/kernel/osrelease");
-        if (kv == null || kv.isEmpty()) kv = System.getProperty("os.version"); // shell 身份读不到 /proc/sys
+        if (kv == null || kv.isEmpty()) kv = System.getProperty("os.version"); // Shell identity cannot read /proc/sys
         d.put("kernel", kv == null ? "" : kv);
         device = d;
         return d;
@@ -224,7 +224,7 @@ final class Scanner {
             alive.add(pid);
             long[] prev = prevTicks.get(pid);
             if (prev != null && prev[0] == p.startTime && dTotal > 0) {
-                // 单核百分比：进程 tick / (总 tick / 核数)
+                // Single-core percentage: proc tick / (total tick / ncpu)
                 p.cpu = (p.ticks - prev[1]) * 100.0 * ncpu / dTotal;
             }
             prevTicks.put(pid, new long[]{p.startTime, p.ticks});
@@ -250,7 +250,7 @@ final class Scanner {
                     } catch (Throwable e) {
                         st.uid = -1;
                     }
-                    // 应用进程 cmdline 刚 fork 时可能还是 zygote，先不缓存
+                    // App process cmdline may still be zygote right after fork, do not cache yet
                     if (!st.cmdline.startsWith("zygote") && !st.cmdline.startsWith("<pre-initialized>")) {
                         staticCache.put(pid, st);
                     }
@@ -260,7 +260,7 @@ final class Scanner {
                 p.uid = st.uid;
                 resolvePackage(p);
             }
-            // 只有应用进程用到 adj（前台 / 后台 / 缓存判定），其余进程不读，省下数百次文件读取
+            // Only app processes use adj (foreground / background / cached evaluation); other processes skip to save hundreds of file reads
             p.adj = "app".equals(p.kind) ? (int) Sys.readLong("/proc/" + pid + "/oom_score_adj", 0) : 0;
             list.add(p);
         }
@@ -297,9 +297,9 @@ final class Scanner {
         p.kind = "native";
     }
 
-    // ------------------------------------------------------------------ KSU 归属
+    // ------------------------------------------------------------------ KSU Attribution
 
-    /** 进程工作目录，按进程生命周期缓存（几乎不会变）。 */
+    /** Process working directory, cached for process lifetime (rarely changes). */
     private String cwd(int pid) {
         Static st = staticCache.get(pid);
         if (st == null) return Sys.readlink("/proc/" + pid + "/cwd");
@@ -311,7 +311,7 @@ final class Scanner {
     }
 
     /**
-     * 解析 /proc/pid/stat 中 ')' 之后的字段（state 为第 0 个），不做 split 以减少临时对象。
+     * Parses fields after ')' in /proc/pid/stat (state is field 0), avoids split to reduce temp objects.
      * out: {ppid(1), utime(11), stime(12), threads(17), starttime(19), rss(21)}
      */
     private static boolean parseStat(String s, int from, long[] out) {
@@ -361,7 +361,7 @@ final class Scanner {
             if (id == null) id = moduleFromPath(cwd(p.pid), prefix);
             p.ksu = id;
         }
-        // 继承父进程归属（模块 service.sh 拉起的 busybox/sleep/子进程）
+        // Inherit parent process attribution (busybox/sleep/child processes spawned by module service.sh)
         for (Proc p : procs) {
             if (!"native".equals(p.kind) || p.ksu != null) continue;
             Proc cur = byPid.get(p.ppid);
@@ -380,7 +380,7 @@ final class Scanner {
         if (s == null) return null;
         int i = s.indexOf(prefix);
         if (i < 0) {
-            // KernelSU 也会把模块挂载到 /data/adb/modules_update 或 /debug_ramdisk 等，这里只处理常见路径
+            // KernelSU also mounts modules to /data/adb/modules_update or /debug_ramdisk etc.; handles common paths here
             return null;
         }
         int start = i + prefix.length();
@@ -389,10 +389,10 @@ final class Scanner {
         return end > start ? s.substring(start, end) : null;
     }
 
-    // ------------------------------------------------------------------ JSON 输出
+    // ------------------------------------------------------------------ JSON Output
 
     private JSONArray procsJson(List<Proc> procs) throws Exception {
-        // 只输出有意义的进程，控制数据量
+        // Output only meaningful processes to control data size
         List<Proc> sorted = new ArrayList<>(procs);
         Collections.sort(sorted, (a, b) -> Long.compare(b.rssKb, a.rssKb));
         Set<Integer> topMem = new HashSet<>();
@@ -432,7 +432,7 @@ final class Scanner {
         int sp = c.indexOf(' ');
         String first = sp > 0 ? c.substring(0, sp) : c;
         if ("app".equals(p.kind)) return first;
-        // 脚本解释器：显示脚本名
+        // Script interpreter: display script name
         if ((first.endsWith("/sh") || first.equals("sh") || first.endsWith("busybox")) && sp > 0) return c.length() > 80 ? c.substring(0, 80) : c;
         int slash = first.lastIndexOf('/');
         return slash >= 0 ? first.substring(slash + 1) : first;
@@ -478,7 +478,7 @@ final class Scanner {
         return arr;
     }
 
-    /** 本轮快照的进程列表，供 ksuJson 聚合。 */
+    /** Process list of current snapshot, used by ksuJson aggregation. */
     private List<Proc> currentProcsForAgg = Collections.emptyList();
 
     private JSONObject lspJson() throws Exception {
@@ -527,7 +527,7 @@ final class Scanner {
         return o;
     }
 
-    // ------------------------------------------------------------------ 硬件状态
+    // ------------------------------------------------------------------ Hardware Status
 
     private JSONArray cpuPolicies() throws Exception {
         JSONArray arr = new JSONArray();
@@ -551,7 +551,7 @@ final class Scanner {
 
     private JSONObject gpu() throws Exception {
         JSONObject o = new JSONObject();
-        // 联发科 (天玑) GED
+        // MediaTek (Dimensity) GED
         String util = Sys.readTrim("/sys/kernel/ged/hal/gpu_utilization");
         if (util != null) o.put("util", Sys.firstNumber(util, -1));
         String freq = Sys.readTrim("/sys/kernel/ged/hal/current_freqency");
@@ -565,7 +565,7 @@ final class Scanner {
             }
             if (best > 0) o.put("mhz", best > 100000 ? best / 1000 : best);
         }
-        // 通用 devfreq (Mali)
+        // Generic devfreq (Mali)
         if (!o.has("mhz")) {
             for (String n : Sys.list("/sys/class/devfreq")) {
                 String low = n.toLowerCase();
@@ -576,7 +576,7 @@ final class Scanner {
                 }
             }
         }
-        // 高通
+        // Qualcomm
         if (!o.has("util")) {
             String b = Sys.readTrim("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage");
             if (b != null) o.put("util", Sys.firstNumber(b, -1));
@@ -592,7 +592,7 @@ final class Scanner {
         o.put("status", st == null ? "" : st);
         long cur = Sys.readLong(d + "/current_now", 0);
         long volt = Sys.readLong(d + "/voltage_now", 0);
-        // 单位自适应：µA/mA、µV/mV
+        // Adaptive units: µA/mA, µV/mV
         double mv = volt > 100000 ? volt / 1000.0 : volt;
         boolean discharging = "Discharging".equalsIgnoreCase(st) || "Not charging".equalsIgnoreCase(st);
         double ma = currentMa(cur, mv, discharging);
@@ -605,10 +605,10 @@ final class Scanner {
     }
 
     /**
-     * 把 current_now 原始读数解释为 mA。标准单位是 µA，少数驱动报 mA。
-     * 放电时整机功耗不可能达到几十瓦：按 mA 解释超过 30W 必为 µA
-     * （修复 1~20mA 的低 µA 电流被旧阈值 20000 误读成 mA）；
-     * 充电时可能出现大电流，保留保守的幅度阈值。
+     * Interprets current_now raw reading as mA. Standard unit is µA; a few drivers report mA.
+     * During discharge, power cannot reach tens of watts: interpreting as mA exceeding 30W must be µA
+     * (fixes low µA currents of 1~20mA erroneously read as mA under old 20000 threshold);
+     * During charging, high currents can occur; keeps conservative magnitude threshold.
      */
     private static double currentMa(long cur, double mv, boolean discharging) {
         if (Math.abs(cur) > 20000) return cur / 1000.0;
@@ -635,7 +635,7 @@ final class Scanner {
         return arr;
     }
 
-    /** 过滤无效读数：联发科等平台上未启用/失效的传感器常报 125°C、127°C 之类的占位值。 */
+    /** Filter invalid readings: disabled/inactive sensors on platforms like MediaTek often report placeholder values like 125°C or 127°C. */
     private static boolean validTemp(double c) {
         return c > -30 && c < 120;
     }
@@ -644,8 +644,8 @@ final class Scanner {
             "Temperature\\{mValue=([-0-9.]+), mType=(-?\\d+), mName=([^,}]+)");
 
     /**
-     * shell 身份（Shizuku 模式）被 SELinux 禁止读取 /sys/class/thermal，
-     * 改从 thermalservice 取温控 HAL 上报的温度。类型前缀便于 Analyzer 区分 SoC / 机身。
+     * Shell identity (Shizuku mode) is blocked by SELinux from reading /sys/class/thermal;
+     * read temperature reported by thermal HAL from thermalservice instead. Type prefix helps Analyzer distinguish SoC / device.
      */
     private void thermalFromService(JSONArray arr) throws Exception {
         Object[] r = Sys.execMax(256 << 10, "dumpsys", "thermalservice");
@@ -654,7 +654,7 @@ final class Scanner {
         Set<String> seen = new HashSet<>();
         while (m.find()) {
             String name = m.group(3).trim();
-            if (!seen.add(name)) continue; // 先出现的是「当前温度」段，后面的缓存段跳过
+            if (!seen.add(name)) continue; // First occurrence is "current temperature" section, subsequent cached sections are skipped
             double t;
             int type;
             try {
@@ -709,7 +709,7 @@ final class Scanner {
             o.put("totalMs", r[4]);
             arr.put(o);
         }
-        // 用户态通过 /sys/power/wake_lock 持有的内核唤醒锁（常见于模块脚本）
+        // Kernel wakelocks held by user-space via /sys/power/wake_lock (common in module scripts)
         String wl = Sys.readTrim("/sys/power/wake_lock");
         if (wl != null && !wl.isEmpty()) {
             for (String n : wl.split("\\s+")) {

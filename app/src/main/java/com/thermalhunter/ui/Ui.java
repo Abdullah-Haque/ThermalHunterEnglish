@@ -29,10 +29,10 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
-/** 配色与通用组件：主界面、底部面板、悬浮窗共用，保证风格统一。 */
+/** Color scheme and shared UI components: used across main interface, bottom sheet, and floating window for consistency. */
 final class Ui {
 
-    // 温度渐变：无数据 / 正常 / 偏热 / 过热
+    // Temperature gradients: No data / Cool / Warm / Hot
     static final int[] GRAD_NONE = {0xFF64748B, 0xFF94A3B8};
     static final int[] GRAD_COOL = {0xFF2563EB, 0xFF06B6D4};
     static final int[] GRAD_WARM = {0xFFF59E0B, 0xFFF97316};
@@ -61,7 +61,7 @@ final class Ui {
         }
     }
 
-    // ------------------------------------------------------------------ 基础
+    // ------------------------------------------------------------------ Basics
 
     int dp(float v) {
         return Math.round(v * ctx.getResources().getDisplayMetrics().density);
@@ -105,7 +105,7 @@ final class Ui {
         return g;
     }
 
-    /** 带细描边的卡片背景。 */
+    /** Card background with subtle stroke. */
     GradientDrawable card(int radius) {
         GradientDrawable g = round(card, radius);
         g.setStroke(dp(1), stroke);
@@ -126,12 +126,12 @@ final class Ui {
         return (color & 0x00FFFFFF) | (a << 24);
     }
 
-    /** 同色系浅底（标签、提示条）。 */
+    /** Tint background matching color scheme (tags, hints). */
     static int tint(int color) {
         return alpha(color, 0x24);
     }
 
-    /** 浅底彩字的小标签。 */
+    /** Small badge with light background and colored text. */
     TextView chip(String s, int color) {
         TextView t = text(s, 11, color, true);
         t.setPadding(dp(9), dp(3), dp(9), dp(3));
@@ -139,7 +139,7 @@ final class Ui {
         return t;
     }
 
-    /** 浅底彩字的说明块（诊断、提示）。 */
+    /** Note block with light background and colored text (diagnostics, tips). */
     TextView note(String s, int color) {
         TextView t = text(s, 13, color, false);
         t.setLineSpacing(dp(2), 1f);
@@ -148,7 +148,7 @@ final class Ui {
         return t;
     }
 
-    /** 小数据块：标题 + 数值，用于负载卡片和详情页。 */
+    /** Data tile: title + value, used in load cards and details pages. */
     LinearLayout tile(String label, String value, int valueColor) {
         LinearLayout t = col();
         t.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -177,7 +177,7 @@ final class Ui {
         return t <= -999 ? GRAD_NONE : t >= 50 ? GRAD_HOT : t >= 42 ? GRAD_WARM : GRAD_COOL;
     }
 
-    // ------------------------------------------------------------------ 实体展示
+    // ------------------------------------------------------------------ Entity Display
 
     private static final Map<String, Object[]> APP_INFO = new HashMap<>(); // pkg -> {label, icon}
 
@@ -211,7 +211,7 @@ final class Ui {
         return null;
     }
 
-    /** 实体头像：有应用图标用图标，否则为类型色块 + 首字。 */
+    /** Entity avatar: uses app icon if available, otherwise colored block with first character. */
     FrameLayout avatar(int sizeDp) {
         FrameLayout box = new FrameLayout(ctx);
         ImageView icon = new ImageView(ctx);
@@ -227,7 +227,7 @@ final class Ui {
         bindAvatar(box, appIcon(e), name, typeColor(e));
     }
 
-    /** 有图标用图标，否则为 color 色块 + 名称首字。 */
+    /** Uses icon if available, otherwise colored background with first character of name. */
     void bindAvatar(FrameLayout box, Drawable d, String name, int color) {
         View[] v = (View[]) box.getTag();
         ImageView icon = (ImageView) v[0];
@@ -246,11 +246,11 @@ final class Ui {
 
     static String typeName(Entity e) {
         switch (e.type) {
-            case Analyzer.APP: return "应用";
-            case Analyzer.NATIVE: return e.ksuId != null ? "模块进程" : "系统进程";
-            case Analyzer.KERNEL: return "内核线程";
-            case Analyzer.KSU: return "KSU模块";
-            default: return "LSP模块";
+            case Analyzer.APP: return "App";
+            case Analyzer.NATIVE: return e.ksuId != null ? "Module Process" : "System Process";
+            case Analyzer.KERNEL: return "Kernel Thread";
+            case Analyzer.KSU: return "KSU Module";
+            default: return "LSP Module";
         }
     }
 
@@ -264,7 +264,7 @@ final class Ui {
         }
     }
 
-    /** 名称里第一个字母/数字/汉字，用作无图标对象的头像。 */
+    /** First letter/digit/character in name, used as avatar for iconless objects. */
     static String initial(String name) {
         if (name != null) {
             for (int i = 0; i < name.length(); ) {
@@ -276,14 +276,14 @@ final class Ui {
         return "?";
     }
 
-    /** 页面内的分组标题。 */
+    /** Section title in page. */
     TextView sectionTitle(String s) {
         TextView t = text(s, 13, dim, true);
         t.setPadding(dp(4), 0, 0, 0);
         return t;
     }
 
-    /** 带圆角背景的图标按钮（顶栏刷新、悬浮窗等）。 */
+    /** Icon button with rounded background (top bar refresh, floating window, etc.). */
     ImageView iconButton(int icon, String desc, View.OnClickListener l) {
         ImageView b = new ImageView(ctx);
         b.setImageResource(icon);
@@ -296,19 +296,19 @@ final class Ui {
     }
 
     static String adjName(int adj) {
-        if (adj < 0) return "系统常驻";
-        if (adj == 0) return "前台";
-        if (adj < 200) return "可见";
-        if (adj < 300) return "前台服务";
-        if (adj < 900) return "后台服务";
-        return "缓存";
+        if (adj < 0) return "System Persistent";
+        if (adj == 0) return "Foreground";
+        if (adj < 200) return "Visible";
+        if (adj < 300) return "Foreground Service";
+        if (adj < 900) return "Background Service";
+        return "Cached";
     }
 
     static String dur(long ms) {
         long s = ms / 1000;
-        if (s < 60) return s + "秒";
-        if (s < 3600) return (s / 60) + "分" + (s % 60) + "秒";
-        return (s / 3600) + "时" + (s % 3600 / 60) + "分";
+        if (s < 60) return s + "s";
+        if (s < 3600) return (s / 60) + "m " + (s % 60) + "s";
+        return (s / 3600) + "h " + (s % 3600 / 60) + "m";
     }
 
     static String freq(long mhz) {
@@ -316,7 +316,7 @@ final class Ui {
         return mhz >= 1000 ? String.format(Locale.US, "%.2fG", mhz / 1000.0) : mhz + "M";
     }
 
-    /** "4 5 6" → "4-6"；不连续时用逗号。 */
+    /** "4 5 6" → "4-6"; separated by commas if not consecutive. */
     static String cpuRange(String cpus) {
         String[] f = cpus.trim().split("[\\s,]+");
         try {
@@ -328,14 +328,14 @@ final class Ui {
         return TextUtils.join(",", f);
     }
 
-    /** 主温度：SoC → 机身 → 电池，依次回退。返回 {温度, 名称}。 */
+    /** Main temperature: SoC → Device → Battery fallback order. Returns {temp, name}. */
     static Object[] mainTemp(Analyzer.Result r) {
-        if (r.maxTemp > -999) return new Object[]{r.maxTemp, "SoC 温度"};
-        if (r.skinTemp > -999) return new Object[]{r.skinTemp, "机身温度"};
-        return new Object[]{r.batteryTemp, "电池温度"};
+        if (r.maxTemp > -999) return new Object[]{r.maxTemp, "SoC Temperature"};
+        if (r.skinTemp > -999) return new Object[]{r.skinTemp, "Device Temperature"};
+        return new Object[]{r.batteryTemp, "Battery Temperature"};
     }
 
-    // ------------------------------------------------------------------ 圆角细进度条
+    // ------------------------------------------------------------------ Rounded Thin Progress Bar
 
     static final class Bar extends View {
         private final Paint track = new Paint(Paint.ANTI_ALIAS_FLAG);

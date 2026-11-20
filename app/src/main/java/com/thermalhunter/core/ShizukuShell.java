@@ -9,24 +9,24 @@ import java.lang.reflect.Method;
 import rikka.shizuku.Shizuku;
 
 /**
- * Shizuku（ADB / 无线调试）模式：借助 Shizuku 服务以 shell 身份（uid 2000）启动进程。
- * shell 权限小于 root：读不到 /data/adb、LSPosed 配置库，也不能杀死其他应用的进程。
+ * Shizuku (ADB / Wireless Debugging) mode: starts process as shell (uid 2000) using Shizuku service.
+ * Shell permissions are less than root: cannot read /data/adb or LSPosed config DB, and cannot kill other apps' processes.
  */
 public final class ShizukuShell {
     private ShizukuShell() {}
 
     public static final int REQUEST_CODE = 0x5A1;
 
-    /** Shizuku 服务不可用的原因；可用时返回 null。 */
+    /** Reason why Shizuku service is unavailable; returns null when available. */
     public static String unavailableReason() {
         try {
             if (!Shizuku.pingBinder()) {
-                return "Shizuku 未运行：请安装 Shizuku，并在其中通过「无线调试」启动服务";
+                return "Shizuku is not running: Please install Shizuku and start the service via Wireless Debugging";
             }
-            if (Shizuku.isPreV11()) return "Shizuku 版本过旧，请升级到 v11 或更新版本";
+            if (Shizuku.isPreV11()) return "Shizuku version is too old, please update to v11 or later";
             return null;
         } catch (Throwable e) {
-            return "Shizuku 不可用: " + e;
+            return "Shizuku unavailable: " + e;
         }
     }
 
@@ -38,7 +38,7 @@ public final class ShizukuShell {
         }
     }
 
-    /** 用户选择了「拒绝且不再询问」，只能去 Shizuku 管理器里手动授权。 */
+    /** User chose "Deny and don't ask again"; permission can only be granted manually in Shizuku Manager. */
     public static boolean permanentlyDenied() {
         try {
             return Shizuku.shouldShowRequestPermissionRationale();
@@ -47,7 +47,7 @@ public final class ShizukuShell {
         }
     }
 
-    /** 弹出 Shizuku 授权对话框（主线程调用）。 */
+    /** Show Shizuku permission dialog (called on main thread). */
     public static void request() {
         try {
             Shizuku.requestPermission(REQUEST_CODE);
@@ -56,8 +56,8 @@ public final class ShizukuShell {
     }
 
     /**
-     * 以 shell 身份启动进程。Shizuku API 13 把 newProcess 设为 private（推荐改用 UserService），
-     * 但这里只需要一个 stdin/stdout 管道，沿用与 su 相同的行协议最简单，故反射调用。
+     * Launch process as shell. Shizuku API 13 made newProcess private (recommends UserService),
+     * but here only a stdin/stdout pipe is needed; reusing the same line protocol as su is simplest, hence invoked via reflection.
      */
     static Process newProcess(String... cmd) throws IOException {
         try {
@@ -67,7 +67,7 @@ public final class ShizukuShell {
         } catch (InvocationTargetException e) {
             throw new IOException(String.valueOf(e.getCause()), e.getCause());
         } catch (Throwable e) {
-            throw new IOException("Shizuku newProcess 不可用: " + e, e);
+            throw new IOException("Shizuku newProcess unavailable: " + e, e);
         }
     }
 }

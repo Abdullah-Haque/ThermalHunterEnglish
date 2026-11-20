@@ -6,15 +6,14 @@ import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 
 /**
- * 新 libxposed API 入口（LSPosed 2.x）。LSPosed 2.x 把 assets/xposed_init + manifest
- * meta-data 的 legacy 声明标记为「已弃用功能」，本类 + META-INF/xposed/ 声明文件让
- * 模块被识别为新式模块，警告消除；同时保留 legacy 声明与 HookEntry 以兼容旧框架。
- * hook 实现完全复用 HookEntry.install（XposedBridge/XposedHelpers 在 LSPosed 2.x
- * 运行时仍被完整支持，逻辑零改动）。
+ * Modern libxposed API entry point (LSPosed 2.x). LSPosed 2.x marks legacy declarations
+ * in assets/xposed_init + manifest meta-data as "deprecated features". This class + META-INF/xposed/
+ * declaration files identify the module as modern, eliminating warnings; legacy declarations and HookEntry
+ * are preserved for compatibility with older frameworks.
+ * The hook implementation completely reuses HookEntry.install (XposedBridge/XposedHelpers remain fully supported at runtime in LSPosed 2.x, zero logic changes).
  *
- * 注意：system_server 在新 API 里不会触发 onPackageLoaded（系统包由
- * onSystemServerStarting 单独回调，且包名标识为 "system" 而非 "android"），
- * 故必须同时覆盖两个回调。
+ * Note: system_server does not trigger onPackageLoaded in the new API (system package is called back separately via onSystemServerStarting,
+ * with package identifier "system" rather than "android"), so both callbacks must be overridden.
  */
 public final class ThermalHunterModule extends XposedModule {
 
@@ -32,7 +31,7 @@ public final class ThermalHunterModule extends XposedModule {
     @Override
     public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam param) {
         try {
-            // 新式路径下系统包标识为 "system"；旧式为 "android"——统一交给 install 判断
+            // System package identified as "system" under new path; legacy is "android" -- unified in install
             String pkg = param.getPackageName();
             if ("system".equals(pkg)) pkg = "android";
             HookEntry.install(pkg, param.getDefaultClassLoader());

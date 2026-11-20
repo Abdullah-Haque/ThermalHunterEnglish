@@ -16,24 +16,24 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 自动归因：在 root 进程里常驻一个最低优先级线程，周期性地对「注入了模块且正在占用 CPU」的宿主进程
- * 低频采样，持续给出每个 LSPosed 模块实际消耗的 CPU。
+ * Auto attribution: maintains a lowest-priority daemon thread in root process, periodically low-frequency
+ * sampling host processes that are "injected with modules and consuming CPU" to continuously report CPU consumed by each LSPosed module.
  *
- * 开销控制：
- * - 只有 App 在取数据（界面可见 / 悬浮窗开启）时才运行，20 秒没人取数据就暂停；
- * - 每 30 秒一个周期，其中采样 15 秒、40Hz；宿主都很空闲时整个周期跳过；
- * - 最多同时采样 4 个进程。
+ * Overhead control:
+ * - Runs only when App is reading data (UI visible / floating window active), pauses after 20s without consumer;
+ * - 30-second cycles, sampling 15s at 40Hz; skips cycle entirely if hosts are idle;
+ * - Samples at most 4 processes simultaneously.
  */
 final class AutoProfiler implements Runnable {
 
     private static final int PERIOD_MS = 30_000, IDLE_RECHECK_MS = 10_000, WINDOW_SEC = 15, FREQ = 40;
-    private static final double MIN_HOST_CPU = 2.0;   // 宿主进程（单核%）低于此值不采样
-    private static final double EMA = 0.6;             // 新窗口的权重
+    private static final double MIN_HOST_CPU = 2.0;   // Do not sample host processes with CPU (single-core %) below this value
+    private static final double EMA = 0.6;             // Weight for new window
     private static final long DEMAND_TIMEOUT_MS = 20_000;
 
     private final Scanner scanner;
     private volatile boolean enabled = true;
-    private volatile boolean broken;                   // simpleperf 不可用，停止尝试
+    private volatile boolean broken;                   // simpleperf unavailable, stop attempting
     private volatile long lastDemand;
     private volatile JSONObject latest;
     private final Map<String, Double> emaCpu = new HashMap<>();
@@ -47,7 +47,7 @@ final class AutoProfiler implements Runnable {
         if (!on) latest = null;
     }
 
-    /** 每次 SNAPSHOT 调用：表示有人在看数据，并返回最新归因结果（可能为 null）。 */
+    /** Called on each SNAPSHOT: indicates active data consumer, returns latest attribution result (may be null). */
     JSONObject poll() {
         lastDemand = SystemClock.elapsedRealtime();
         return enabled ? latest : null;
@@ -71,7 +71,7 @@ final class AutoProfiler implements Runnable {
             try {
                 next = cycle();
             } catch (Throwable e) {
-                latest = error("自动归因出错：" + e);
+                latest = error("Auto attribution error: " + e);
                 next = PERIOD_MS;
             }
             long spent = SystemClock.elapsedRealtime() - start;
@@ -80,23 +80,23 @@ final class AutoProfiler implements Runnable {
     }
 
     /**
-     * @return 距下一周期的间隔（毫秒）：采样后按完整周期；宿主空闲时较快复查；
-     * 未在工作（无人取数据 / 已关闭 / 扫描数据未就绪）时 2 秒后再看，以便尽快开始。
+     * @return Interval to next cycle (ms): full cycle after sampling; quick recheck when hosts are idle;
+     * 2s when inactive (no consumer / disabled / scanner data not ready) to start promptly.
      */
     private int cycle() throws Exception {
         if (!enabled || broken || SystemClock.elapsedRealtime() - lastDemand > DEMAND_TIMEOUT_MS) return 2000;
-        // 至少两轮扫描后进程 CPU 才有意义（第一轮没有差值，全为 0）
+        // Process CPU is only meaningful after at least two scans (no diff on first scan, all 0)
         if (scanner.scans < 2) return 2000;
         if (!Profiler.available()) {
             broken = true;
-            latest = error("系统没有自带 simpleperf，无法自动归因模块占用");
+            latest = error("System lacks built-in simpleperf, unable to automatically attribute module usage");
             return PERIOD_MS;
         }
         Map<Integer, String> targets = pickTargets();
         if (targets.isEmpty()) {
-            // 宿主都很空闲：模块占用视为 0，并逐步衰减旧数据
+            // Hosts are idle: module usage treated as 0, decaying old data gradually
             decayAll();
-            latest = result(null, Collections.emptyList(), "注入模块的进程都很空闲");
+            latest = result(null, Collections.emptyList(), "Injected processes are all idle");
             return IDLE_RECHECK_MS;
         }
         Profiler.Window w;
@@ -104,14 +104,14 @@ final class AutoProfiler implements Runnable {
             w = Profiler.sample(targets, WINDOW_SEC, FREQ);
         } catch (Exception e) {
             String msg = String.valueOf(e.getMessage());
-            if (msg.contains("没有自带")) broken = true;
+            if (msg.contains("simpleperf")) broken = true;
             latest = error(msg);
             return PERIOD_MS;
         }
         double wallNs = Math.max(1, w.wallNs);
         Set<String> seen = new HashSet<>();
         for (Map.Entry<String, Long> e : w.moduleNs.entrySet()) {
-            double cpu = e.getValue() * 100.0 / wallNs; // 单核百分比
+            double cpu = e.getValue() * 100.0 / wallNs; // Single-core percentage
             Double old = emaCpu.get(e.getKey());
             emaCpu.put(e.getKey(), old == null ? cpu : old * (1 - EMA) + cpu * EMA);
             seen.add(e.getKey());
@@ -124,8 +124,8 @@ final class AutoProfiler implements Runnable {
     }
 
     /**
-     * system_server + 被 LSPosed 模块作用且在占用 CPU 的应用进程，最多 4 个。
-     * system_server 总是候选：Zygisk 模块（如 HMA-OSS）也会注入它，而这类注入在 LSPosed 作用域里看不到。
+     * system_server + app processes scoped by LSPosed modules and consuming CPU, at most 4.
+     * system_server is always a candidate: Zygisk modules (e.g. HMA-OSS) also inject into it, which is not visible in LSPosed scope.
      */
     private Map<Integer, String> pickTargets() {
         boolean wantSystem = true;

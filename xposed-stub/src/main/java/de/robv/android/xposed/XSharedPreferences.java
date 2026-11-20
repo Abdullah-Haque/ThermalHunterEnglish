@@ -4,8 +4,8 @@ import java.io.File;
 import java.util.Set;
 
 /**
- * 编译用存根：真实实现由 LSPosed 提供。
- * 用于在被 hook 的应用进程里读取本模块写出的（世界可读的）SharedPreferences。
+ * Compile-time stub: actual implementation is provided by LSPosed.
+ * Used to read the world-readable SharedPreferences written by this module in hooked app processes.
  */
 public class XSharedPreferences {
     public XSharedPreferences(String packageName) {

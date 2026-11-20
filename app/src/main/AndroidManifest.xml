@@ -2,15 +2,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 获取已安装应用的名称与图标 -->
+    <!-- Query installed app names and icons -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
-    <!-- 悬浮窗：在其他应用上层显示 + 前台服务常驻通知 -->
+    <!-- Floating window: display over other apps + foreground service persistent notification -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- 后台耗电监测：开机后重新注册每小时一次的（不唤醒设备的）检查 -->
+    <!-- Background drain monitor: re-register hourly non-wake-up check on boot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -31,7 +31,7 @@
             </intent-filter>
         </activity>
 
-        <!-- 悬浮窗服务（用户手动开启，通知栏可随时关闭） -->
+        <!-- Floating window service (user enabled, dismissible from notification bar) -->
         <service
             android:name=".ui.FloatService"
             android:exported="false"
@@ -41,7 +41,7 @@
                 android:value="User-enabled floating overlay showing device temperature and top CPU-consuming processes in real time" />
         </service>
 
-        <!-- 后台耗电异常监测（用户可在设置中关闭） -->
+        <!-- Background battery drain anomaly monitor (can be disabled in Settings) -->
         <receiver
             android:name=".ui.DrainWatcher"
             android:exported="false">
@@ -51,7 +51,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- Shizuku：接收 Shizuku 服务的 binder（ADB / shell 模式） -->
+        <!-- Shizuku: receive Shizuku service binder (ADB / shell mode) -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -60,7 +60,7 @@
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- LSPosed 模块声明 -->
+        <!-- LSPosed module declarations -->
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposeddescription" android:value="@string/xposed_desc" />
         <meta-data android:name="xposedminversion" android:value="93" />

@@ -11,7 +11,7 @@
         <item name="android:dialogCornerRadius">20dp</item>
     </style>
 
-    <!-- 底部面板（Sheet） -->
+    <!-- Bottom Sheet -->
     <style name="SheetTheme" parent="@android:style/Theme.Material.Dialog">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowBackground">@android:color/transparent</item>

@@ -28,13 +28,13 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 「耗电」页：自上次充满电以来的长时耗电统计（数据来自系统 batterystats）。
- * 只在进入本页或手动刷新时读取一次，不参与 3 秒一次的实时采样。
+ * "Battery" page: Long-term battery drain statistics since last full charge (data from system batterystats).
+ * Read only once upon entering this page or manual refresh, not participating in real-time 3-second sampling.
  */
 final class DrainPage {
 
     private static final long MIN = 60_000L, HOUR = 3_600_000L;
-    /** 距上次读取超过这个时间，再次进入本页时自动刷新。 */
+    /** Automatically refresh when re-entering this page if time since last read exceeds this duration. */
     private static final long STALE_MS = 2 * MIN;
 
     private final MainActivity a;
@@ -57,20 +57,20 @@ final class DrainPage {
 
         LinearLayout top = u.row();
         LinearLayout tc = u.col();
-        tc.addView(u.text("耗电统计", 24, u.fg, true));
-        sub = u.text("自上次充满电以来 · 系统累计数据", 12, u.dim, false);
+        tc.addView(u.text("Battery Stats", 24, u.fg, true));
+        sub = u.text("Since last full charge · System cumulative data", 12, u.dim, false);
         sub.setSingleLine(true);
         sub.setEllipsize(TextUtils.TruncateAt.END);
         tc.addView(sub);
         top.addView(tc, Ui.weight(1));
-        top.addView(u.iconButton(R.drawable.ic_refresh, "刷新", v -> refresh()), Ui.lp(u.dp(42), u.dp(42), u.dp(8), 0, 0, 0));
+        top.addView(u.iconButton(R.drawable.ic_refresh, "Refresh", v -> refresh()), Ui.lp(u.dp(42), u.dp(42), u.dp(8), 0, 0, 0));
         col.addView(top);
 
         body = u.col();
         col.addView(body, Ui.lp(-1, -2, 0, u.dp(14), 0, 0));
         view.addView(col, new ViewGroup.LayoutParams(-1, -2));
 
-        // 先展示上次保存的报告，读取完成后替换
+        // Display last saved report first, replace once read completes
         JSONObject last = DrainWatcher.lastReport(a);
         if (last != null && last.optBoolean("ok")) {
             try {
@@ -82,10 +82,10 @@ final class DrainPage {
         render();
     }
 
-    /** 切到本页时调用：数据过旧则自动刷新。 */
+    /** Called when switching to this page: auto-refreshes if data is stale. */
     void onShown() {
         if (System.currentTimeMillis() - fetchedAt > STALE_MS) refresh();
-        // 后台提醒需要通知权限：第一次进入本页时申请一次
+        // Background alerts require notification permission: request once on first visit to this page
         if (!askedNotify && DrainWatcher.enabled(a) && Build.VERSION.SDK_INT >= 33
                 && a.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             askedNotify = true;
@@ -96,13 +96,13 @@ final class DrainPage {
     void refresh() {
         if (loading) return;
         loading = true;
-        sub.setText("正在读取系统耗电统计…");
+        sub.setText("Reading system battery stats…");
         a.mon().call("DRAIN", r -> {
             loading = false;
             fetchedAt = System.currentTimeMillis();
             if (!r.optBoolean("ok")) {
-                sub.setText("读取失败");
-                a.snack("读取耗电统计失败：" + r.optString("error"), false);
+                sub.setText("Failed to read");
+                a.snack("Failed to read battery stats: " + r.optString("error"), false);
                 if (report == null) render();
                 return;
             }
@@ -117,7 +117,7 @@ final class DrainPage {
         });
     }
 
-    /** 底部导航上的提示点：有严重异常时为 true。 */
+    /** Indicator dot on bottom navigation: true when severe anomaly exists. */
     boolean hasBad() {
         if (report == null) return false;
         if (report.optInt("badApps") > 0) return true;
@@ -128,13 +128,13 @@ final class DrainPage {
         return false;
     }
 
-    // ------------------------------------------------------------------ 渲染
+    // ------------------------------------------------------------------ Rendering
 
     private void render() {
         body.removeAllViews();
         JSONObject r = report;
         if (r == null) {
-            TextView t = u.text(loading ? "正在读取…" : "暂无数据，点击右上角刷新", 13, u.dim, false);
+            TextView t = u.text(loading ? "Reading…" : "No data, tap refresh at top right", 13, u.dim, false);
             t.setGravity(Gravity.CENTER);
             t.setPadding(0, u.dp(48), 0, u.dp(48));
             body.addView(t, new LinearLayout.LayoutParams(-1, -2));
@@ -143,15 +143,15 @@ final class DrainPage {
         }
         long age = System.currentTimeMillis() - r.optLong("t");
         if (!loading) {
-            sub.setText("自上次充满电以来 · " + (age < MIN ? "刚刚更新" : "更新于 " + ago(age)));
+            sub.setText("Since last full charge · " + (age < MIN ? "Just updated" : "Updated " + ago(age)));
         }
 
         body.addView(summaryCard(r));
 
         long onBattery = r.optLong("onBatteryMs");
         if (onBattery < 30 * MIN) {
-            body.addView(u.note("充满电后使用时间还不够（" + DrainStats.dur(onBattery)
-                    + "），数据会随使用不断累计，建议放电 1 小时以上再看。", u.accent), Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
+            body.addView(u.note("Usage time since full charge is insufficient (" + DrainStats.dur(onBattery)
+                    + "), data will accumulate over use; recommended to check after discharging for over 1 hour.", u.accent), Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
         }
         JSONArray issues = r.optJSONArray("issues");
         for (int i = 0; issues != null && i < issues.length(); i++) {
@@ -160,7 +160,7 @@ final class DrainPage {
                     Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
         }
 
-        // 应用：异常在前，其余按耗电排序
+        // Apps: anomalies first, rest sorted by battery drain
         JSONArray apps = r.optJSONArray("apps");
         List<JSONObject> flagged = new ArrayList<>(), rest = new ArrayList<>();
         for (int i = 0; apps != null && i < apps.length(); i++) {
@@ -170,48 +170,48 @@ final class DrainPage {
         flagged.sort((x, y) -> Integer.compare(y.optInt("level"), x.optInt("level")));
         double total = Math.max(1, r.optDouble("uidMah", 0));
         if (!flagged.isEmpty()) {
-            section("异常应用（" + flagged.size() + "）");
+            section("Abnormal Apps (" + flagged.size() + ")");
             for (JSONObject o : flagged) body.addView(appCard(o, total), Ui.lp(-1, -2, 0, 0, 0, u.dp(8)));
         }
-        section("耗电排行");
+        section("Battery Drain Ranking");
         int shown = 0;
         for (JSONObject o : rest) {
             if (shown >= 25) break;
             body.addView(appCard(o, total), Ui.lp(-1, -2, 0, 0, 0, u.dp(8)));
             shown++;
         }
-        if (shown == 0) body.addView(u.text(flagged.isEmpty() ? "暂无应用耗电数据" : "其余应用耗电很少", 13, u.dim, false),
+        if (shown == 0) body.addView(u.text(flagged.isEmpty() ? "No app battery drain data" : "Remaining apps consumed very little power", 13, u.dim, false),
                 Ui.lp(-1, -2, u.dp(4), 0, 0, 0));
 
         JSONArray comps = r.optJSONArray("components");
         if (comps != null && comps.length() > 0) {
-            section("电量去向（硬件组件）");
+            section("Power Consumers (Hardware)");
             body.addView(barBox(comps, "mah", " mAh", 6));
         }
         JSONArray reasons = r.optJSONArray("wakeReasons");
         if (reasons != null && reasons.length() > 0) {
-            section("唤醒来源（内核）");
+            section("Wakeup Sources (Kernel)");
             body.addView(timeBox(reasons));
         }
         JSONArray kwl = r.optJSONArray("kernelWakelocks");
         if (kwl != null && kwl.length() > 0) {
-            section("内核唤醒锁");
+            section("Kernel Wakelocks");
             body.addView(timeBox(kwl));
         }
 
         JSONArray hist = DrainWatcher.history(a);
         if (hist.length() > 0) {
-            section("历史放电周期");
+            section("Discharge History");
             for (int i = 0; i < hist.length() && i < 10; i++) {
                 body.addView(historyCard(hist.optJSONObject(i)), Ui.lp(-1, -2, 0, 0, 0, u.dp(8)));
             }
         }
 
-        section("后台监测");
+        section("Background Monitoring");
         body.addView(watchRow());
-        body.addView(u.note("数据来自系统 batterystats，充满电拔下后系统会重新计数。"
-                + "单个应用的 mAh 是系统按 CPU、唤醒锁、网络、定位等模型估算的；"
-                + "「后台持锁」「唤醒闹钟」「前台时长」是系统的实际计时。", u.dim), Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
+        body.addView(u.note("Data from system batterystats, reset when unplugged after full charge."
+                + " Individual app mAh is estimated by the system based on CPU, wakelocks, network, location, etc.;"
+                + " \"Background wakelock\", \"Wakeup alarms\", and \"Foreground duration\" are actual system timings.", u.dim), Ui.lp(-1, -2, 0, u.dp(10), 0, 0));
     }
 
     private void section(String s) {
@@ -228,15 +228,15 @@ final class DrainPage {
 
         LinearLayout top = u.row();
         LinearLayout l = u.col();
-        l.addView(u.text("已耗电", 12, 0xDDFFFFFF, false));
+        l.addView(u.text("Drained", 12, 0xDDFFFFFF, false));
         long pct = r.optLong("dischargePct");
         TextView big = u.text(pct + "%", 38, Color.WHITE, true);
         big.setFontFeatureSettings("tnum");
         l.addView(big);
-        String mah = r.optLong("dischargeMah") > 0 ? " · 约 " + r.optLong("dischargeMah") + " mAh" : "";
-        l.addView(u.text("放电 " + DrainStats.dur(r.optLong("onBatteryMs")) + mah, 12, 0xDDFFFFFF, false));
+        String mah = r.optLong("dischargeMah") > 0 ? " · approx. " + r.optLong("dischargeMah") + " mAh" : "";
+        l.addView(u.text("Discharge " + DrainStats.dur(r.optLong("onBatteryMs")) + mah, 12, 0xDDFFFFFF, false));
         top.addView(l, Ui.weight(1));
-        TextView verdict = u.text(level == DrainStats.BAD ? "耗电异常" : level == DrainStats.WARN ? "略偏快" : "状态良好",
+        TextView verdict = u.text(level == DrainStats.BAD ? "Drain Anomaly" : level == DrainStats.WARN ? "Slightly Fast" : "Good",
                 12, Color.WHITE, true);
         verdict.setPadding(u.dp(10), u.dp(4), u.dp(10), u.dp(4));
         verdict.setBackground(Ui.round(0x33FFFFFF, u.dp(12)));
@@ -245,29 +245,29 @@ final class DrainPage {
         top.addView(verdict, vp);
         c.addView(top);
 
-        // 亮屏 / 熄屏 时长比例条
+        // Screen on / Screen off duration ratio bar
         long on = r.optLong("screenOnMs"), off = r.optLong("screenOffMs");
         if (on + off > 0) {
             Ui.Bar bar = new Ui.Bar(a, 0x40FFFFFF);
             bar.set(on / (float) (on + off), Color.WHITE);
             c.addView(bar, Ui.lp(-1, u.dp(5), 0, u.dp(12), 0, u.dp(6)));
             LinearLayout lg = u.row();
-            lg.addView(u.text("亮屏 " + DrainStats.dur(on), 11, 0xDDFFFFFF, false), Ui.weight(1));
-            lg.addView(u.text("熄屏 " + DrainStats.dur(off), 11, 0xDDFFFFFF, false));
+            lg.addView(u.text("Screen on " + DrainStats.dur(on), 11, 0xDDFFFFFF, false), Ui.weight(1));
+            lg.addView(u.text("Screen off " + DrainStats.dur(off), 11, 0xDDFFFFFF, false));
             c.addView(lg);
         }
 
-        // 三个核心指标
+        // Three core metrics
         LinearLayout tiles = new LinearLayout(a);
         double active = r.optDouble("activeRate", -1), standby = r.optDouble("standbyRate", -1);
         double awake = r.optDouble("awakeRatio", -1);
-        tiles.addView(heroTile("亮屏耗电", active >= 0 ? fmtRate(active) : "--"), Ui.weight(1));
+        tiles.addView(heroTile("Screen-on Drain", active >= 0 ? fmtRate(active) : "--"), Ui.weight(1));
         LinearLayout.LayoutParams p2 = Ui.weight(1);
         p2.leftMargin = u.dp(8);
-        tiles.addView(heroTile("熄屏待机", standby >= 0 ? fmtRate(standby) : "--"), p2);
+        tiles.addView(heroTile("Screen-off Standby", standby >= 0 ? fmtRate(standby) : "--"), p2);
         LinearLayout.LayoutParams p3 = Ui.weight(1);
         p3.leftMargin = u.dp(8);
-        tiles.addView(heroTile("熄屏深睡", awake >= 0 ? Math.round((1 - awake) * 100) + "%" : "--"), p3);
+        tiles.addView(heroTile("Deep Sleep", awake >= 0 ? Math.round((1 - awake) * 100) + "%" : "--"), p3);
         c.addView(tiles, Ui.lp(-1, -2, 0, u.dp(12), 0, 0));
         return c;
     }
@@ -293,7 +293,7 @@ final class DrainPage {
         return lv;
     }
 
-    // ------------------------------------------------------------------ 应用卡片与详情
+    // ------------------------------------------------------------------ App Card and Details
 
     private View appCard(JSONObject o, double total) {
         String name = DrainWatcher.label(a, o);
@@ -318,7 +318,7 @@ final class DrainPage {
         tr.addView(t, Ui.weight(1));
         if (level != DrainStats.OK) {
             int lc = level == DrainStats.BAD ? u.bad : u.warn;
-            TextView badge = u.chip(level == DrainStats.BAD ? "异常" : "可疑", lc);
+            TextView badge = u.chip(level == DrainStats.BAD ? "Anomaly" : "Suspicious", lc);
             badge.setTextSize(10);
             tr.addView(badge, Ui.lp(-2, -2, u.dp(6), 0, 0, 0));
         }
@@ -359,12 +359,12 @@ final class DrainPage {
 
     private static String metrics(JSONObject o) {
         List<String> p = new ArrayList<>();
-        p.add("前台 " + DrainStats.dur(o.optLong("topMs")));
+        p.add("Foreground " + DrainStats.dur(o.optLong("topMs")));
         long bgWl = o.optLong("bgWlMs") > 0 ? o.optLong("bgWlMs") : o.optLong("wlMs");
-        if (bgWl >= MIN) p.add((o.optLong("bgWlMs") > 0 ? "后台持锁 " : "持锁 ") + DrainStats.dur(bgWl));
-        if (o.optLong("alarms") > 0) p.add("唤醒 " + o.optLong("alarms") + " 次");
+        if (bgWl >= MIN) p.add((o.optLong("bgWlMs") > 0 ? "Bg Wakelock " : "Wakelock ") + DrainStats.dur(bgWl));
+        if (o.optLong("alarms") > 0) p.add("Wakeup " + o.optLong("alarms") + " times");
         if (o.optLong("cpuMs") >= MIN) p.add("CPU " + DrainStats.dur(o.optLong("cpuMs")));
-        if (o.optLong("gpsMs") >= MIN) p.add("定位 " + DrainStats.dur(o.optLong("gpsMs")));
+        if (o.optLong("gpsMs") >= MIN) p.add("Location " + DrainStats.dur(o.optLong("gpsMs")));
         return TextUtils.join(" · ", p);
     }
 
@@ -390,7 +390,7 @@ final class DrainPage {
         title.setMaxLines(2);
         title.setEllipsize(TextUtils.TruncateAt.END);
         tc.addView(title);
-        String pkgs = pk == null || pk.length() == 0 ? "" : pk.optString(0) + (pk.length() > 1 ? " 等 " + pk.length() + " 个包" : "");
+        String pkgs = pk == null || pk.length() == 0 ? "" : pk.optString(0) + (pk.length() > 1 ? " etc. " + pk.length() + " packages" : "");
         TextView st = u.text("uid " + uid + (pkgs.isEmpty() ? "" : " · " + pkgs), 12, u.dim, false);
         st.setSingleLine(true);
         st.setEllipsize(TextUtils.TruncateAt.MIDDLE);
@@ -401,70 +401,70 @@ final class DrainPage {
         double mah = o.optDouble("mah", 0);
         int lc = o.optInt("level") == DrainStats.BAD ? u.bad : o.optInt("level") == DrainStats.WARN ? u.warn : u.fg;
         List<Object[]> stats = new ArrayList<>();
-        stats.add(new Object[]{"估算耗电", String.format(Locale.US, "%.1f mAh", mah), lc});
-        stats.add(new Object[]{"占应用总耗电", Math.round(mah / total * 100) + "%", u.fg});
-        stats.add(new Object[]{"前台使用", DrainStats.dur(o.optLong("topMs")), u.fg});
-        stats.add(new Object[]{"后台持锁", o.optLong("bgWlMs") > 0 ? DrainStats.dur(o.optLong("bgWlMs")) : "--", u.fg});
-        stats.add(new Object[]{"持锁合计", DrainStats.dur(o.optLong("wlMs")), u.fg});
-        stats.add(new Object[]{"唤醒闹钟", o.optLong("alarms") + " 次", u.fg});
-        stats.add(new Object[]{"CPU 时间", DrainStats.dur(o.optLong("cpuMs")), u.fg});
-        stats.add(new Object[]{"定位", o.optLong("gpsMs") > 0 ? DrainStats.dur(o.optLong("gpsMs")) : "--", u.fg});
-        stats.add(new Object[]{"后台运行", DrainStats.dur(o.optLong("bgMs") + o.optLong("fgsMs")), u.fg});
+        stats.add(new Object[]{"Estimated Drain", String.format(Locale.US, "%.1f mAh", mah), lc});
+        stats.add(new Object[]{"Share of App Drain", Math.round(mah / total * 100) + "%", u.fg});
+        stats.add(new Object[]{"Foreground Usage", DrainStats.dur(o.optLong("topMs")), u.fg});
+        stats.add(new Object[]{"Background Wakelock", o.optLong("bgWlMs") > 0 ? DrainStats.dur(o.optLong("bgWlMs")) : "--", u.fg});
+        stats.add(new Object[]{"Total Wakelock", DrainStats.dur(o.optLong("wlMs")), u.fg});
+        stats.add(new Object[]{"Wakeup Alarms", o.optLong("alarms") + " times", u.fg});
+        stats.add(new Object[]{"CPU Time", DrainStats.dur(o.optLong("cpuMs")), u.fg});
+        stats.add(new Object[]{"Location", o.optLong("gpsMs") > 0 ? DrainStats.dur(o.optLong("gpsMs")) : "--", u.fg});
+        stats.add(new Object[]{"Background Running", DrainStats.dur(o.optLong("bgMs") + o.optLong("fgsMs")), u.fg});
         s.add(a.statGrid(stats), Ui.lp(-1, -2, 0, u.dp(16), 0, 0));
 
         JSONArray r = o.optJSONArray("reasons"), w = o.optJSONArray("warnings");
         if ((r != null && r.length() > 0) || (w != null && w.length() > 0)) {
-            s.section("诊断");
+            s.section("Diagnosis");
             for (int i = 0; r != null && i < r.length(); i++) s.add(u.note(r.optString(i), u.bad));
             for (int i = 0; w != null && i < w.length(); i++) s.add(u.note(w.optString(i), u.warn));
         }
         JSONArray wl = o.optJSONArray("wakelocks");
         if (wl != null && wl.length() > 0) {
-            s.section("唤醒锁（累计持有时长）");
+            s.section("Wakelocks (Cumulative Held Duration)");
             s.add(timeBox(wl));
         }
         JSONArray al = o.optJSONArray("alarmTags");
         if (al != null && al.length() > 0) {
-            s.section("唤醒闹钟（次数）");
+            s.section("Wakeup Alarms (Count)");
             LinearLayout box = box();
             for (int i = 0; i < al.length(); i++) {
                 JSONObject x = al.optJSONObject(i);
-                box.addView(kvRow(x.optString("name"), x.optLong("n") + " 次"), Ui.lp(-1, -2, 0, i > 0 ? u.dp(5) : 0, 0, 0));
+                box.addView(kvRow(x.optString("name"), x.optLong("n") + " times"), Ui.lp(-1, -2, 0, i > 0 ? u.dp(5) : 0, 0, 0));
             }
             s.add(box);
         }
 
-        // 操作：仅限单一包名的普通应用
+        // Actions: limited to single-package normal apps
         if (uid % 100000 >= 10000 && pk != null && pk.length() == 1 && !pk.optString(0).equals(a.getPackageName())) {
             String pkg = pk.optString(0);
             int user = uid / 100000;
-            s.action("强行停止", Sheet.PRIMARY, () -> a.run("FORCESTOP " + pkg + " " + user));
-            s.action("停用（冻结）应用", Sheet.DANGER, () -> a.confirm("停用「" + name + "」？",
-                    "停用后应用图标消失、不会再启动，可在「监控」页的应用详情里重新启用。", "停用",
+            s.action("Force Stop", Sheet.PRIMARY, () -> a.run("FORCESTOP " + pkg + " " + user));
+            s.action("Disable (Freeze) App", Sheet.DANGER, () -> a.confirm("Disable \"" + name + "\"?",
+                    "After disabling, the app icon disappears and it will not start again. It can be re-enabled in App Details on the Monitor page.", "Disable",
                     () -> a.run("APP_DISABLE " + pkg + " " + user)));
         }
-        s.action("关闭", Sheet.NORMAL, null);
+        s.action("Close", Sheet.NORMAL, null);
         s.show();
     }
 
-    // ------------------------------------------------------------------ 其他区块
+    // ------------------------------------------------------------------ Other Sections
 
     private View historyCard(JSONObject h) {
         LinearLayout c = u.col();
         c.setPadding(u.dp(14), u.dp(12), u.dp(14), u.dp(12));
         c.setBackground(u.card(u.dp(18)));
         LinearLayout tr = u.row();
-        String when = DateFormat.format("M月d日 HH:mm", new Date(h.optLong("start"))) + " → "
-                + DateFormat.format("M月d日 HH:mm", new Date(h.optLong("end")));
+        String when = DateFormat.format("MMM d, HH:mm", new Date(h.optLong("start"))) + " → "
+                + DateFormat.format("MMM d, HH:mm", new Date(h.optLong("end")));
         tr.addView(u.text(when, 13, u.fg, true), Ui.weight(1));
-        if (h.optInt("badApps") > 0) tr.addView(u.chip(h.optInt("badApps") + " 个异常", u.bad));
+        if (h.optInt("badApps") > 0) tr.addView(u.chip(h.optInt("badApps") + (h.optInt("badApps") == 1 ? " anomaly" : " anomalies"), u.bad));
         c.addView(tr);
         List<String> p = new ArrayList<>();
-        p.add("耗电 " + h.optLong("dischargePct") + "%（" + DrainStats.dur(h.optLong("onBatteryMs")) + "）");
+        p.add("Drained " + h.optLong("dischargePct") + "% (" + DrainStats.dur(h.optLong("onBatteryMs")) + ")");
         double sb = h.optDouble("standbyRate", -1), ac = h.optDouble("activeRate", -1), aw = h.optDouble("awakeRatio", -1);
-        if (ac >= 0) p.add("亮屏 " + fmtRate(ac));
-        if (sb >= 0) p.add("待机 " + fmtRate(sb));
-        if (aw >= 0) p.add("深睡 " + Math.round((1 - aw) * 100) + "%");
+        if (ac >= 0) p.add("Screen on " + fmtRate(ac));
+        if (sb >= 0) p.add("Standby " + fmtRate(sb));
+        if (aw >= 0) p.add("Deep sleep " + Math.round((1 - aw) * 100) + "%");
         TextView m = u.text(TextUtils.join(" · ", p), 12, sb >= 3 ? u.bad : sb >= 1.5 ? u.warn : u.dim, false);
         c.addView(m, Ui.lp(-1, -2, 0, u.dp(3), 0, 0));
         JSONArray top = h.optJSONArray("top");
@@ -472,9 +472,9 @@ final class DrainPage {
             List<String> t = new ArrayList<>();
             for (int i = 0; i < top.length(); i++) {
                 JSONObject x = top.optJSONObject(i);
-                t.add(x.optString("name") + " " + Math.round(x.optDouble("mah")) + "mAh");
+                t.add(x.optString("name") + " " + Math.round(x.optDouble("mah")) + " mAh");
             }
-            TextView tv = u.text("耗电前三：" + TextUtils.join("、", t), 12, u.dim, false);
+            TextView tv = u.text("Top 3 Drain: " + TextUtils.join(", ", t), 12, u.dim, false);
             c.addView(tv, Ui.lp(-1, -2, 0, u.dp(2), 0, 0));
         }
         return c;
@@ -482,11 +482,11 @@ final class DrainPage {
 
     private View watchRow() {
         boolean root = !"shell".equals(a.connMode());
-        String desc = "约每小时检查一次（不唤醒手机，不常驻后台），发现严重异常时发通知；同时自动保存每个放电周期的记录。"
-                + (root ? "" : "需要 root，Shizuku 模式下不可用。");
-        return a.switchRow("后台监测耗电异常", desc, DrainWatcher.enabled(a), on -> {
+        String desc = "Checks approximately once per hour (does not wake device, not persistent in background), sends notification when severe anomaly is detected; automatically archives each discharge cycle."
+                + (root ? "" : " Requires root, unavailable in Shizuku mode.");
+        return a.switchRow("Background battery drain monitoring", desc, DrainWatcher.enabled(a), on -> {
             DrainWatcher.setEnabled(a, on);
-            a.snack(on ? "已开启后台耗电监测" : "已关闭后台耗电监测", true);
+            a.snack(on ? "Background drain monitoring enabled" : "Background drain monitoring disabled", true);
         });
     }
 
@@ -509,18 +509,18 @@ final class DrainPage {
         return r;
     }
 
-    /** {name, ms, n?} 列表：名称 + 时长（+ 次数）。 */
+    /** {name, ms, n?} list: Name + Duration (+ Count). */
     private View timeBox(JSONArray arr) {
         LinearLayout box = box();
         for (int i = 0; i < arr.length(); i++) {
             JSONObject x = arr.optJSONObject(i);
-            String v = DrainStats.dur(x.optLong("ms")) + (x.has("n") ? " · " + x.optLong("n") + " 次" : "");
+            String v = DrainStats.dur(x.optLong("ms")) + (x.has("n") ? " · " + x.optLong("n") + " times" : "");
             box.addView(kvRow(x.optString("name"), v), Ui.lp(-1, -2, 0, i > 0 ? u.dp(5) : 0, 0, 0));
         }
         return box;
     }
 
-    /** 名称 + 数值 + 占比条。 */
+    /** Name + Value + Proportion bar. */
     private View barBox(JSONArray arr, String key, String unit, int max) {
         LinearLayout box = box();
         double top = 0;
@@ -537,12 +537,12 @@ final class DrainPage {
     }
 
     private static String fmtRate(double r) {
-        return String.format(Locale.US, r >= 10 ? "%.0f%%/时" : "%.1f%%/时", r);
+        return String.format(Locale.US, r >= 10 ? "%.0f%%/h" : "%.1f%%/h", r);
     }
 
     private static String ago(long ms) {
-        if (ms < HOUR) return (ms / MIN) + " 分钟前";
-        if (ms < 24 * HOUR) return (ms / HOUR) + " 小时前";
-        return (ms / (24 * HOUR)) + " 天前";
+        if (ms < HOUR) return (ms / MIN) + " min ago";
+        if (ms < 24 * HOUR) return (ms / HOUR) + " hr ago";
+        return (ms / (24 * HOUR)) + " days ago";
     }
 }

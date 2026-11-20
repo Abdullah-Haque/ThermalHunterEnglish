@@ -11,14 +11,14 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 读写 LSPosed 的模块配置库 /data/adb/lspd/config/modules_config.db。
- * 典型表结构（官方 LSPosed）:
+ * Reads and writes LSPosed module config DB at /data/adb/lspd/config/modules_config.db.
+ * Typical table schema (official LSPosed):
  *   modules(mid, module_pkg_name, apk_path, enabled, ...)
- *   scope(mid, app_pkg_name, user_id)        —— 系统框架在库中记为 "system"
- * 各分支列名不完全一致（例如没有 mid 列），因此先读表结构再按实际列名查询。
- * 新分支把启用状态拆到单独的表，并按用户记录:
+ *   scope(mid, app_pkg_name, user_id)        -- System framework recorded as "system" in DB
+ * Column names differ across branches (e.g. no mid column), so we inspect schema before querying.
+ * Modern branches split enabled state into a separate table and record per user:
  *   modules(module_pkg_name, apk_path) + modules_state(module_pkg_name, user_id, enabled, ...)
- * 直接改库后 lspd 的内存缓存不会刷新，需重启手机才能完全生效。
+ * After modifying the database directly, lspd's in-memory cache is not refreshed; a phone reboot is required to take full effect.
  */
 final class LspModules {
     static final String[] DB_PATHS = {
@@ -69,7 +69,7 @@ final class LspModules {
         Result r = new Result();
         String path = dbPath();
         if (path == null) {
-            r.error = Sys.exists("/data/adb/lspd") ? "找到 /data/adb/lspd 但没有 modules_config.db" : "未安装 LSPosed";
+            r.error = Sys.exists("/data/adb/lspd") ? "Found /data/adb/lspd but modules_config.db is missing" : "LSPosed not installed";
             return r;
         }
         r.dbPath = path;
@@ -96,7 +96,7 @@ final class LspModules {
                 }
             }
             if (sc.state != null) {
-                // 启用状态在单独的表里：优先取主用户 (0)，否则任一用户启用即视为启用；没有记录视为未启用
+                // Enabled state in separate table: prefer primary user (0), else enabled if any user is enabled; treated as disabled if no record exists
                 Map<String, Boolean> user0 = new HashMap<>(), any = new HashMap<>();
                 String q = "SELECT " + sc.stPkg + ", " + (sc.stUser == null ? "0" : sc.stUser) + ", " + sc.stEnabled
                         + " FROM " + sc.state;
@@ -130,17 +130,17 @@ final class LspModules {
             }
             r.available = true;
         } catch (Throwable e) {
-            r.error = "读取 LSPosed 数据库失败: " + e;
+            r.error = "Failed to read LSPosed database: " + e;
         } finally {
             if (db != null) db.close();
         }
         return r;
     }
 
-    /** 启用/禁用模块。返回 null 表示成功，否则为错误信息。 */
+    /** Enable/disable module. Returns null on success, otherwise error message. */
     static String setEnabled(String pkg, boolean enabled) {
         String path = dbPath();
-        if (path == null) return "未找到 LSPosed 数据库";
+        if (path == null) return "LSPosed database not found";
         String ctx = fileContext(path);
         SQLiteDatabase db = null;
         try {
@@ -152,28 +152,28 @@ final class LspModules {
                 ContentValues cv = new ContentValues();
                 cv.put(sc.mEnabled, enabled ? 1 : 0);
                 int n = db.update(sc.modules, cv, sc.mPkg + " = ?", new String[]{pkg});
-                if (n == 0) return "数据库中没有该模块: " + pkg;
+                if (n == 0) return "Module not found in database: " + pkg;
             } else if (sc.state != null) {
-                // 按用户记录的启用状态：更新该模块所有用户的记录；启用时若没有记录则为主用户新建一条
+                // Per-user enabled state: update records for all users of this module; create a new record for primary user if none exists when enabling
                 ContentValues cv = new ContentValues();
                 cv.put(sc.stEnabled, enabled ? 1 : 0);
                 int n = db.update(sc.state, cv, sc.stPkg + " = ?", new String[]{pkg});
                 if (n == 0) {
-                    if (!enabled) return null; // 没有记录本来就是未启用
+                    if (!enabled) return null; // No record already means disabled
                     ContentValues ins = new ContentValues();
                     ins.put(sc.stPkg, pkg);
                     if (sc.stUser != null) ins.put(sc.stUser, 0);
                     ins.put(sc.stEnabled, 1);
-                    if (db.insert(sc.state, null, ins) < 0) return "写入 LSPosed 启用状态失败";
+                    if (db.insert(sc.state, null, ins) < 0) return "Failed to write LSPosed enabled state";
                 }
             } else {
-                return "暂不支持这个 LSPosed 版本的禁用操作（找不到启用状态列）。请把这条信息截图反馈：\n" + describe(db);
+                return "Disabling modules is not supported on this LSPosed version (enabled column not found). Please report this info:\n" + describe(db);
             }
         } catch (Throwable e) {
-            return "写入 LSPosed 数据库失败: " + e;
+            return "Failed to write LSPosed database: " + e;
         } finally {
             if (db != null) db.close();
-            // 保持 SELinux 上下文与原库一致（lspd 需要能读写）
+            // Maintain same SELinux context as original database (lspd needs read/write access)
             if (ctx != null) {
                 for (String suf : new String[]{"", "-wal", "-shm", "-journal"}) {
                     if (Sys.exists(path + suf)) Sys.exec("chcon", ctx, path + suf);
@@ -184,12 +184,12 @@ final class LspModules {
         return null;
     }
 
-    /** 按实际表结构确定的表名/列名。 */
+    /** Table/column names determined by actual schema. */
     private static final class Schema {
         String error;
         String modules, mKey, mPkg, mApk, mEnabled;
         String scope, sKey, sApp, sUser;
-        String state, stPkg, stUser, stEnabled; // 独立的启用状态表（可为空）
+        String state, stPkg, stUser, stEnabled; // Independent enabled-state table (can be null)
     }
 
     private static List<String> tables(SQLiteDatabase db) {
@@ -209,7 +209,7 @@ final class LspModules {
         return l;
     }
 
-    /** 列出所有表及其列，用于反馈未适配的数据库结构。 */
+    /** List all tables and their columns, for reporting unsupported database structures. */
     private static String describe(SQLiteDatabase db) {
         StringBuilder sb = new StringBuilder();
         for (String t : tables(db)) {
@@ -231,7 +231,7 @@ final class LspModules {
         s.modules = pick(tables, "modules", "module");
         s.scope = pick(tables, "scope", "scopes", "module_scope");
         if (s.modules == null) {
-            s.error = "无法识别的 LSPosed 数据库：没有 modules 表。表结构：\n" + describe(db);
+            s.error = "Unrecognized LSPosed database: no modules table. Schema:\n" + describe(db);
             return s;
         }
         List<String> mc = columns(db, s.modules);
@@ -239,7 +239,7 @@ final class LspModules {
         s.mApk = pick(mc, "apk_path", "path", "module_apk_path");
         s.mEnabled = pick(mc, "enabled", "enable", "is_enabled");
         if (s.mPkg == null) {
-            s.error = "无法识别的 LSPosed 数据库。表结构：\n" + describe(db);
+            s.error = "Unrecognized LSPosed database. Schema:\n" + describe(db);
             return s;
         }
         String mId = pick(mc, "mid", "module_id", "id", "_id");
@@ -250,9 +250,9 @@ final class LspModules {
             String sId = pick(sc, "mid", "module_id");
             String sPkg = pick(sc, "module_pkg_name", "module_package_name", "module");
             if (s.sApp == null) {
-                s.scope = null; // 作用域表无法识别时只显示模块列表
+                s.scope = null; // When scope table cannot be identified, only show module list
             } else if (sId != null) {
-                // 作用域以模块 id 关联；模块表没有 id 列时用 rowid（INTEGER PRIMARY KEY 即 rowid 别名）
+                // Scope associated by module id; if module table has no id column, use rowid (INTEGER PRIMARY KEY is alias for rowid)
                 s.sKey = sId;
                 s.mKey = mId != null ? mId : "rowid";
             } else if (sPkg != null) {
@@ -264,7 +264,7 @@ final class LspModules {
         }
         if (s.mKey == null) s.mKey = mId != null ? mId : "rowid";
         if (s.mEnabled == null) {
-            // 在其他表中寻找「包名 + enabled」形式的启用状态表，如 modules_state
+            // Look in other tables for an enabled state table with "pkg_name + enabled", e.g. modules_state
             for (String t : tables) {
                 if (t.equals(s.modules) || t.equals(s.scope)) continue;
                 List<String> cols = columns(db, t);

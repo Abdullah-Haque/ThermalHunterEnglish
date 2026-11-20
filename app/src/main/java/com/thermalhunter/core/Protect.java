@@ -5,11 +5,11 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 
-/** App 端与 root 端共用的保护名单：误杀这些会导致死机、重启、掉 root 或失去 LSPosed。 */
+/** Shared protection list between App and root daemon: accidentally killing these causes freezes, reboots, loss of root, or loss of LSPosed. */
 public final class Protect {
     private Protect() {}
 
-    /** 绝不允许杀死的进程（comm 或 cmdline 首段/文件名）。 */
+    /** Processes strictly forbidden to be killed (comm or cmdline first token / file name). */
     public static final Set<String> PROCS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "init", "kthreadd", "ueventd", "system_server", "zygote", "zygote64", "webview_zygote",
             "app_process", "app_process64", "surfaceflinger", "servicemanager", "hwservicemanager",
@@ -23,7 +23,7 @@ public final class Protect {
             "thermalhunter_root",
             "com.android.phone", "com.android.systemui", "com.thermalhunter")));
 
-    /** 不允许强行停止/停用的应用包（含 vivo/iQOO OriginOS 关键组件与 root/LSPosed 管理器）。 */
+    /** App packages forbidden to be force-stopped / disabled (includes vivo/iQOO OriginOS critical components and root / LSPosed managers). */
     public static final Set<String> PKGS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "android", "system", "com.android.systemui", "com.android.phone", "com.android.settings",
             "com.android.providers.settings", "com.android.providers.media", "com.android.providers.telephony",

@@ -19,20 +19,20 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import rikka.shizuku.Shizuku;
 
 /**
- * 全局采样器：主界面和悬浮窗共用同一个后台会话（root 或 Shizuku）和同一个 Analyzer。
- * 只有存在订阅者（界面可见 / 悬浮窗开启且亮屏）时才采样；没有订阅者 60 秒后关闭后台进程，
- * 因此本工具自身不会在后台持续耗电。
+ * Global sampler: main UI and floating overlay share the same background session (root or Shizuku) and Analyzer.
+ * Samples only when subscribers exist (UI visible / floating window active and screen on);
+ * closes background process after 60s without subscribers, so this tool itself does not continuously drain battery in background.
  */
 public final class Monitor {
 
     public interface Listener {
-        /** 新的分析结果（主线程）。 */
+        /** New analysis result (main thread). */
         void onUpdate(Analyzer.Result r);
 
-        /** 连接 / 采集状态（主线程）。error=false 表示进行中的提示。 */
+        /** Connection / collection status (main thread). error=false indicates in-progress message. */
         void onStatus(String msg, boolean error);
 
-        /** 是否需要较快的刷新（主界面 3 秒；只有悬浮窗时放宽到 5 秒以省电）。 */
+        /** Whether fast refresh is needed (3s for main UI; relaxed to 5s for floating window only to save power). */
         default boolean wantsFast() {
             return true;
         }
@@ -46,7 +46,7 @@ public final class Monitor {
         void onReply(JSONObject r);
     }
 
-    // 工作模式：auto = 先试 root，失败再用 Shizuku；root = 仅 root；shizuku = 仅 Shizuku（ADB）
+    // Work mode: auto = try root first, fall back to Shizuku; root = root only; shizuku = Shizuku only (ADB)
     public static final String[] MODES = {"auto", "root", "shizuku"};
 
     private static final long INTERVAL_MS = 3000, SLOW_INTERVAL_MS = 5000, RETRY_MS = 5000, IDLE_CLOSE_MS = 60_000;
@@ -65,8 +65,8 @@ public final class Monitor {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private volatile Analyzer.Result last;
-    private volatile boolean rootFailed;   // auto 模式下 root 已失败，不再反复申请
-    private volatile boolean shizukuAsked; // 已弹过 Shizuku 授权
+    private volatile boolean rootFailed;   // root failed under auto mode; do not repeatedly request
+    private volatile boolean shizukuAsked; // Shizuku permission dialog already prompted
     private final Runnable tickR = this::tick;
     private final Runnable idleClose = () -> {
         if (listeners.isEmpty()) root.close();
@@ -78,14 +78,14 @@ public final class Monitor {
         HandlerThread t = new HandlerThread("monitor");
         t.start();
         bg = new Handler(t.getLooper());
-        // Shizuku 就绪或授权结果返回时立即重连，不等重试间隔
+        // Reconnect immediately when Shizuku becomes ready or permission result returns, without waiting for retry interval
         Shizuku.addBinderReceivedListenerSticky(this::kick);
         Shizuku.addRequestPermissionResultListener((code, res) -> {
             if (code == ShizukuShell.REQUEST_CODE) kick();
         });
     }
 
-    /** 主线程调用。第一个订阅者加入时开始采样。 */
+    /** Called on main thread. Starts sampling when first subscriber joins. */
     public void addListener(Listener l) {
         if (listeners.contains(l)) return;
         boolean first = listeners.isEmpty();
@@ -99,7 +99,7 @@ public final class Monitor {
         }
     }
 
-    /** 主线程调用。最后一个订阅者离开时停止采样，闲置一段时间后关闭后台进程。 */
+    /** Called on main thread. Stops sampling when last subscriber leaves; closes background process after idling. */
     public void removeListener(Listener l) {
         listeners.remove(l);
         if (listeners.isEmpty()) {
@@ -113,14 +113,14 @@ public final class Monitor {
         return last;
     }
 
-    /** 立即采样一次。 */
+    /** Trigger a sample immediately. */
     public void kick() {
         if (listeners.isEmpty()) return;
         bg.removeCallbacks(tickR);
         bg.post(tickR);
     }
 
-    /** 切换工作模式后调用：关闭当前会话，按新模式重连。 */
+    /** Called after switching work mode: closes current session and reconnects according to new mode. */
     public void reconnect() {
         bg.post(() -> {
             rootFailed = false;
@@ -134,7 +134,7 @@ public final class Monitor {
         return prefs.getBoolean("auto_prof", true);
     }
 
-    /** 开关 LSP 模块自动归因（持续低频采样）。 */
+    /** Toggle LSP module auto attribution (continuous low-frequency sampling). */
     public void setAutoProf(boolean on) {
         prefs.edit().putBoolean("auto_prof", on).apply();
         bg.post(() -> {
@@ -142,7 +142,7 @@ public final class Monitor {
         });
     }
 
-    /** 依次执行命令，结果回到主线程。 */
+    /** Execute commands sequentially, results returned to main thread. */
     public void runAll(List<String> cmds, Done done) {
         bg.post(() -> {
             List<String> msgs = new ArrayList<>();
@@ -159,7 +159,7 @@ public final class Monitor {
         });
     }
 
-    /** 执行一条命令并把原始 JSON 结果交回主线程（用于深度分析等耗时操作，期间实时采样暂停）。 */
+    /** Execute a command and return raw JSON result to main thread (used for time-consuming ops like deep analysis; real-time sampling is paused during execution). */
     public void call(String cmd, Reply reply) {
         bg.post(() -> {
             JSONObject r;
@@ -195,9 +195,9 @@ public final class Monitor {
                 bg.postDelayed(tickR, RETRY_MS);
                 return;
             }
-            // 新会话：同步 LSP 模块自动归因开关（Shizuku 模式下 root 端会拒绝，忽略即可）
+            // New session: sync LSP module auto attribution toggle (ignored if root side rejects in Shizuku mode)
             root.safeCall("AUTOPROF " + (autoProfEnabled() ? 1 : 0));
-            // 重新建立刷新率锁定（上一会话退出后 lockedIdx 已丢失）
+            // Re-establish refresh rate lock (lockedIdx was lost after previous session exited)
             int lockFps = prefs.getInt("lock_fps", 0);
             if (lockFps > 0) root.safeCall("REFRESH_SET " + lockFps);
         }
@@ -210,7 +210,7 @@ public final class Monitor {
                 for (Listener l : listeners) l.onUpdate(r);
             });
         } else {
-            status("采集失败：" + snap.optString("error"), true);
+            status("Collection failed: " + snap.optString("error"), true);
         }
         if (!listeners.isEmpty()) bg.postDelayed(tickR, interval());
     }
@@ -220,45 +220,45 @@ public final class Monitor {
         return SLOW_INTERVAL_MS;
     }
 
-    /** 按工作模式建立后台会话；成功返回 null，失败返回给用户看的说明。在 bg 线程执行。 */
+    /** Establishes background session based on work mode; returns null on success, user-facing error message on failure. Runs on bg thread. */
     private String connect() {
         String mode = prefs.getString("work_mode", "auto");
         String rootErr = null;
         if (mode.equals("root") || (mode.equals("auto") && !rootFailed)) {
-            status("正在获取 root 权限…", false);
+            status("Acquiring root permission...", false);
             if (root.start(app, false)) return null;
             rootErr = root.lastError();
             if (mode.equals("root")) {
-                return "未获得 root：" + rootErr + "\n请在 KernelSU 管理器 → 超级用户 中允许「热源猎手」，然后重新打开。";
+                return "Root not acquired: " + rootErr + "\nPlease grant Superuser permission to ThermalHunter in KernelSU Manager, then reopen.";
             }
             rootFailed = true;
         } else if (mode.equals("auto")) {
-            rootErr = "未授予";
+            rootErr = "Not granted";
         }
         String why = ShizukuShell.unavailableReason();
         if (why == null && !ShizukuShell.granted()) {
             if (ShizukuShell.permanentlyDenied()) {
-                why = "Shizuku 授权已被拒绝：请在 Shizuku → 授权应用管理 中允许「热源猎手」";
+                why = "Shizuku permission was denied: Please allow ThermalHunter in Shizuku → Authorized Applications";
             } else {
                 if (!shizukuAsked) {
                     shizukuAsked = true;
                     ui.post(ShizukuShell::request);
                 }
-                why = "请在弹出的 Shizuku 对话框中允许「热源猎手」";
+                why = "Please grant permission to ThermalHunter in the Shizuku dialog";
             }
         }
         if (why == null) {
-            status("正在通过 Shizuku 启动…", false);
+            status("Starting via Shizuku...", false);
             if (root.start(app, true)) return null;
-            why = "Shizuku 启动采集进程失败：" + root.lastError();
+            why = "Shizuku failed to start collection process: " + root.lastError();
         }
-        if (rootErr != null) return "未获得 root：" + rootErr + "\n" + why;
+        if (rootErr != null) return "Root not acquired: " + rootErr + "\n" + why;
         return why;
     }
 
     /**
-     * shell 身份（Shizuku 模式）读不到 /sys/class/power_supply，
-     * 用应用自身的 BatteryManager 补齐电量、电流、电压、温度和充电状态。
+     * Shell identity (Shizuku mode) cannot read /sys/class/power_supply;
+     * use app's own BatteryManager to supply battery level, current, voltage, temperature, and charging status.
      */
     private void fillBattery(JSONObject snap) {
         JSONObject b = snap.optJSONObject("battery");
@@ -279,7 +279,7 @@ public final class Monitor {
                     : st == BatteryManager.BATTERY_STATUS_DISCHARGING ? "Discharging"
                     : st == BatteryManager.BATTERY_STATUS_NOT_CHARGING ? "Not charging"
                     : st == BatteryManager.BATTERY_STATUS_FULL ? "Full" : "");
-            int cur = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW); // 一般为 µA
+            int cur = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW); // Typically µA
             int mv = i == null ? 0 : i.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0);
             boolean discharging = st == BatteryManager.BATTERY_STATUS_DISCHARGING
                     || st == BatteryManager.BATTERY_STATUS_NOT_CHARGING;
@@ -295,8 +295,8 @@ public final class Monitor {
     }
 
     /**
-     * 把电流原始读数解释为 mA（与 root 端 Scanner.currentMa 同一套规则）。
-     * 放电时按 mA 解释功率超过 30W 必为 µA；充电时保留保守的幅度阈值。
+     * Interprets raw current reading as mA (same rule set as root-side Scanner.currentMa).
+     * During discharge, if power interpreted as mA exceeds 30W, it must be µA; keeps conservative magnitude threshold during charging.
      */
     private static double currentMa(long cur, double mv, boolean discharging) {
         if (Math.abs(cur) > 20000) return cur / 1000.0;

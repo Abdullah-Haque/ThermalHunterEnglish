@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- LSPosed 推荐作用域：系统框架 + 自身（用于检测激活状态） -->
+    <!-- Recommended LSPosed scope: System Framework + self (for activation detection) -->
     <string-array name="xposed_scope">
         <item>android</item>
         <item>com.thermalhunter</item>

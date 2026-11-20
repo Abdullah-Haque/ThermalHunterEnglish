@@ -38,8 +38,8 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * 悬浮窗：在其他应用上方实时显示温度、功耗和发热最高的进程/应用。
- * 以前台服务运行（通知栏常驻，可一键关闭）；熄屏时暂停采样，亮屏恢复。
+ * Floating overlay: Displays real-time temperature, power, and highest heat processes/apps over other apps.
+ * Runs as a foreground service (persistent in notification shade, dismissible in one tap); pauses sampling when screen is off, resumes when screen is on.
  */
 public class FloatService extends Service implements Monitor.Listener {
 
@@ -49,7 +49,7 @@ public class FloatService extends Service implements Monitor.Listener {
     private static final int TOP_N = 5;
 
     private static volatile boolean running;
-    /** 主界面用来同步悬浮窗按钮状态（主线程）。 */
+    /** Main activity uses this to sync floating window button state (main thread). */
     static Runnable stateListener;
 
     static boolean isRunning() {
@@ -91,7 +91,7 @@ public class FloatService extends Service implements Monitor.Listener {
     @Override
     public void onCreate() {
         super.onCreate();
-        // startForegroundService 之后必须尽快 startForeground，否则系统会判定崩溃
+        // startForegroundService must be followed promptly by startForeground, otherwise the system considers it a crash
         goForeground();
         if (!Settings.canDrawOverlays(this)) {
             stopSelf();
@@ -99,7 +99,7 @@ public class FloatService extends Service implements Monitor.Listener {
         }
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
         collapsed = prefs.getBoolean("float_collapsed", false);
-        u = new Ui(this, true); // 悬浮窗固定深色，叠在任何界面上都清晰
+        u = new Ui(this, true); // Floating window fixed dark theme for clear visibility overlaid on any UI
         wm = getSystemService(WindowManager.class);
         buildView();
         wm.addView(view, lp);
@@ -146,7 +146,7 @@ public class FloatService extends Service implements Monitor.Listener {
 
     private void goForeground() {
         NotificationManager nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "悬浮窗", NotificationManager.IMPORTANCE_LOW));
+        nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Floating Overlay", NotificationManager.IMPORTANCE_LOW));
         PendingIntent stop = PendingIntent.getService(this, 0,
                 new Intent(this, FloatService.class).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE);
         PendingIntent open = PendingIntent.getActivity(this, 1,
@@ -154,10 +154,10 @@ public class FloatService extends Service implements Monitor.Listener {
                 PendingIntent.FLAG_IMMUTABLE);
         Notification n = new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat)
-                .setContentTitle("热源猎手悬浮窗运行中")
-                .setContentText("熄屏时自动暂停采样")
+                .setContentTitle("ThermalHunter overlay running")
+                .setContentText("Sampling paused when screen is off")
                 .setContentIntent(open)
-                .addAction(new Notification.Action.Builder(null, "关闭悬浮窗", stop).build())
+                .addAction(new Notification.Action.Builder(null, "Close Overlay", stop).build())
                 .setOngoing(true)
                 .build();
         if (Build.VERSION.SDK_INT >= 34) {
@@ -167,7 +167,7 @@ public class FloatService extends Service implements Monitor.Listener {
         }
     }
 
-    // ------------------------------------------------------------------ 视图
+    // ------------------------------------------------------------------ View
 
     private void buildView() {
         view = u.col();
@@ -199,12 +199,12 @@ public class FloatService extends Service implements Monitor.Listener {
 
         rows = u.col();
         view.addView(rows, Ui.lp(-1, -2, 0, u.dp(6), 0, 0));
-        // 行视图只创建一次，每次刷新只改文字和颜色，避免反复重排悬浮窗
+        // Row views created once, refreshed by changing text and color only, avoiding repeated layout passes
         for (int i = 0; i < TOP_N; i++) {
             rowViews[i] = row();
             rows.addView(rowViews[i][0], Ui.lp(-1, -2, 0, i > 0 ? u.dp(4) : 0, 0, 0));
         }
-        emptyRow = u.text("没有明显的热源 👍", 12, u.dim, false);
+        emptyRow = u.text("No significant heat sources 👍", 12, u.dim, false);
         rows.addView(emptyRow);
         rows.setVisibility(collapsed ? View.GONE : View.VISIBLE);
 
@@ -216,7 +216,7 @@ public class FloatService extends Service implements Monitor.Listener {
         lp.x = prefs.getInt("float_x", u.dp(12));
         lp.y = prefs.getInt("float_y", u.dp(140));
 
-        // 拖动移动位置；轻点展开/收起进程列表
+        // Drag to move; tap to expand/collapse process list
         int slop = ViewConfiguration.get(this).getScaledTouchSlop();
         view.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY;
@@ -272,10 +272,10 @@ public class FloatService extends Service implements Monitor.Listener {
         if (bat != null) {
             power.setText(r.discharging
                     ? String.format(Locale.US, "%.2f W", bat.optLong("powerMw") / 1000.0)
-                    : "充电 " + Math.abs(bat.optLong("currentMa")) + " mA");
+                    : "Charging " + Math.abs(bat.optLong("currentMa")) + " mA");
         }
         if (collapsed) return;
-        // 进程 / 应用按 CPU，LSP 模块按自动归因的实测 CPU，一起排序取前几名
+        // Processes/apps sorted by CPU, LSP modules by auto-attributed measured CPU, together top entries selected
         List<Entity> items = new ArrayList<>();
         for (Entity e : r.heat) if (e.cpuAvg >= 0.5 || e.level != Analyzer.OK) items.add(e);
         for (Entity e : r.lsp) if (e.measuredCpu >= 0.5) items.add(e);
@@ -317,7 +317,7 @@ public class FloatService extends Service implements Monitor.Listener {
     private void bindRow(View[] v, Entity e) {
         ((GradientDrawable) v[1].getBackground())
                 .setColor(e.level == Analyzer.OK ? Ui.typeColor(e) : u.levelColor(e.level));
-        ((TextView) v[2]).setText(e.type == Analyzer.LSP || e.type == Analyzer.KSU ? u.label(e) + "（模块）" : u.label(e));
+        ((TextView) v[2]).setText(e.type == Analyzer.LSP || e.type == Analyzer.KSU ? u.label(e) + " (Module)" : u.label(e));
         TextView val = (TextView) v[3];
         val.setText(Analyzer.fmt(value(e)) + "%");
         val.setTextColor(e.level == Analyzer.OK ? u.fg : u.levelColor(e.level));
