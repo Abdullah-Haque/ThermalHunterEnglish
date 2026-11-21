@@ -505,4 +505,3 @@ public final class Analyzer {
         return sb.toString();
     }
 }
-}
